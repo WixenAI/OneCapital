@@ -1,0 +1,1022 @@
+// Controllers/customer/TradingController.js
+// Customer Trading - Place orders, manage positions, and holdings
+
+import asyncHandler from 'express-async-handler';
+import OrderModel from '../../Model/Trading/OrdersModel.js';
+import HoldingModel from '../../Model/Trading/HoldingModel.js';
+import PositionsModel from '../../Model/Trading/PositionsModel.js';
+import FundModel from '../../Model/FundManagement/FundModel.js';
+import UserWatchlistModel from '../../Model/UserWatchlistModel.js';
+import Instrument from '../../Model/InstrumentModel.js';
+import {
+  getClientPricingConfig,
+  inferPricingBucket,
+  getSpreadForBucket,
+  applySpreadToPrice,
+} from '../../Utils/ClientPricingEngine.js';
+import { logFailedOrderAttempt } from '../../Utils/OrderAttemptLogger.js';
+import { getStandardMarketStatus } from '../../Utils/tradingSession.js';
+import { releaseMarginOnClose } from '../../services/marginLifecycle.js';
+
+const toNumber = (value, fallback = 0) => {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+};
+
+const normalizeProduct = (value) => String(value || '').trim().toUpperCase();
+const isLongTermProduct = (value) => ['CNC', 'NRML'].includes(normalizeProduct(value));
+const isBrokerImpersonationBypass = (req) =>
+  req.user?.isImpersonation && req.user?.impersonatorRole === 'broker';
+
+const marketClosedPayload = () => {
+  const marketStatus = getStandardMarketStatus();
+  return {
+    success: false,
+    code: 'MARKET_CLOSED',
+    message: 'Market Closed. Open From 9:15AM To 3:15PM On Working Days',
+    marketStatus: {
+      isOpen: marketStatus.isOpen,
+      tradingDay: marketStatus.tradingDay,
+      reason: marketStatus.reason,
+      marketOpen: marketStatus.marketOpen,
+      marketClose: marketStatus.marketClose,
+      timezone: marketStatus.timezone,
+      serverTimeIst: marketStatus.istNow.toISOString(),
+    },
+  };
+};
+
+/**
+ * @desc     Place order
+ * @route    POST /api/customer/orders
+ * @access   Private (Customer only)
+ */
+const placeOrder = asyncHandler(async (req, res) => {
+  const customerId = req.user._id;
+  const customerIdStr = req.user.customer_id;
+  const brokerIdStr = req.user.stringBrokerId;
+  const brokerId = req.user.mongoBrokerId;
+
+  const {
+    symbol,
+    side,
+    quantity,
+    price,
+    orderType = 'LIMIT',
+    product = 'MIS',
+    exchange = 'NSE',
+    segment,
+    instrumentToken,
+    validity = 'DAY',
+    triggerPrice,
+    disclosedQuantity,
+    stopLoss,
+    target,
+  } = req.body;
+
+  const failPlacement = async ({
+    status = 400,
+    message = 'Order attempt failed.',
+    code,
+    extraResponse,
+    details,
+  }) => {
+    await logFailedOrderAttempt({
+      req,
+      payload: {
+        ...req.body,
+        customer_id: customerId,
+        customer_id_str: customerIdStr,
+        broker_id: brokerId,
+        broker_id_str: brokerIdStr,
+      },
+      reason: message,
+      code,
+      status,
+      details,
+    });
+
+    return res.status(status).json({
+      success: false,
+      message,
+      ...(extraResponse || {}),
+    });
+  };
+
+  // Validate required fields
+  if (!symbol || !side || !quantity || !price || !instrumentToken) {
+    return failPlacement({
+      status: 400,
+      message: 'Symbol, side, quantity, price, and instrumentToken are required.',
+      code: 'VALIDATION_ERROR',
+    });
+  }
+
+  const sideNorm = String(side || '').toUpperCase();
+  const productNorm = normalizeProduct(product);
+  const orderTypeNorm = String(orderType || 'LIMIT').toUpperCase();
+  const qtyNum = toNumber(quantity);
+  const rawEntryPrice = toNumber(price);
+  const triggerPriceNum = toNumber(triggerPrice, 0);
+  const stopLossNum = toNumber(stopLoss, 0);
+  const targetNum = toNumber(target, 0);
+
+  if (!['BUY', 'SELL'].includes(sideNorm)) {
+    return failPlacement({
+      status: 400,
+      message: 'side must be BUY or SELL.',
+      code: 'VALIDATION_ERROR',
+    });
+  }
+
+  if (!['MIS', 'CNC', 'NRML'].includes(productNorm)) {
+    return failPlacement({
+      status: 400,
+      message: 'product must be MIS, CNC, or NRML.',
+      code: 'VALIDATION_ERROR',
+    });
+  }
+
+  if (qtyNum <= 0 || rawEntryPrice <= 0) {
+    return failPlacement({
+      status: 400,
+      message: 'quantity and price must be positive numbers.',
+      code: 'VALIDATION_ERROR',
+    });
+  }
+
+  if (
+    isLongTermProduct(productNorm) &&
+    (
+      ['SL', 'TGT'].includes(orderTypeNorm) ||
+      triggerPriceNum !== 0 ||
+      stopLossNum !== 0 ||
+      targetNum !== 0
+    )
+  ) {
+    return failPlacement({
+      status: 400,
+      message: 'SL/Target is locked for longterm orders (CNC/NRML). Use market/regular order.',
+      code: 'VALIDATION_ERROR',
+    });
+  }
+
+  // Check trading is enabled
+  if (!req.user.trading_enabled) {
+    return failPlacement({
+      status: 403,
+      message: 'Order placement is not available right now. Please try again later.',
+      code: 'TRADING_DISABLED',
+    });
+  }
+
+  // Get fund info
+  const fund = await FundModel.findOne({
+    customer_id_str: customerIdStr,
+    broker_id_str: brokerIdStr,
+  });
+
+  if (!fund) {
+    return failPlacement({
+      status: 400,
+      message: 'Fund account not found.',
+      code: 'FUND_ACCOUNT_NOT_FOUND',
+    });
+  }
+
+  let resolvedExchange = exchange;
+  let resolvedSegment = segment;
+
+  if (!resolvedExchange || !resolvedSegment) {
+    const instrumentDoc = await Instrument.findOne({ instrument_token: String(instrumentToken) })
+      .select('exchange segment')
+      .lean();
+    resolvedExchange = resolvedExchange || instrumentDoc?.exchange || 'NSE';
+    resolvedSegment = resolvedSegment || instrumentDoc?.segment || 'NSE';
+  }
+
+  // Client-level spread application for margin + P&L basis
+  const pricingConfig = await getClientPricingConfig({
+    brokerIdStr: String(brokerIdStr),
+    customerIdStr: String(customerIdStr),
+  });
+  const pricingBucket = inferPricingBucket({
+    exchange: resolvedExchange,
+    segment: resolvedSegment,
+    symbol,
+    orderType,
+  });
+  const spreadForBucket = getSpreadForBucket(pricingConfig, pricingBucket);
+  const entryPricing = applySpreadToPrice({
+    rawPrice: rawEntryPrice,
+    side: sideNorm,
+    spread: spreadForBucket,
+  });
+  const effectiveEntryPrice = entryPricing.effectivePrice;
+
+  // Calculate margin required
+  const orderValue = effectiveEntryPrice * qtyNum;
+  const marginRequired = orderValue; // Full notional for all products (canonical rule)
+
+  // Check margin
+  const availableMargin = (fund.intraday?.available_limit || 0) - (fund.intraday?.used_limit || 0);
+  if (sideNorm === 'BUY' && availableMargin < marginRequired) {
+    return failPlacement({
+      status: 400,
+      message: 'Insufficient margin.',
+      code: 'INSUFFICIENT_FUNDS',
+      extraResponse: {
+        required: marginRequired,
+        available: availableMargin,
+      },
+    });
+  }
+
+  // Check if CNC order requires broker approval
+  const isImmediate = productNorm === 'MIS';
+  const requiresApproval = !isImmediate;
+  const status = isImmediate ? 'EXECUTED' : 'PENDING';
+  const approvalStatus = requiresApproval ? 'pending' : 'approved';
+
+  let order;
+  try {
+    // Create order
+    order = await OrderModel.create({
+      customer_id_str: customerIdStr,
+      broker_id_str: brokerIdStr,
+      broker_id: brokerId,
+      customer_id: customerId,
+      symbol,
+      side: sideNorm,
+      quantity: qtyNum,
+      price: effectiveEntryPrice,
+      raw_entry_price: entryPricing.rawPrice,
+      effective_entry_price: effectiveEntryPrice,
+      entry_spread_applied: entryPricing.appliedSpread,
+      order_type: orderTypeNorm,
+      product: productNorm,
+      exchange: resolvedExchange,
+      segment: resolvedSegment,
+      instrument_token: instrumentToken,
+      validity,
+      trigger_price: triggerPriceNum,
+      disclosed_quantity: disclosedQuantity,
+      stop_loss: stopLossNum,
+      target: targetNum,
+      status,
+      requires_approval: requiresApproval,
+      approval_status: approvalStatus,
+      margin_blocked: marginRequired,
+      pricing_bucket: pricingBucket,
+      placed_at: new Date(),
+    });
+
+    // Block margin
+    if (!requiresApproval) {
+      fund.intraday.used_limit = (fund.intraday.used_limit || 0) + marginRequired;
+      await fund.save();
+    }
+  } catch (error) {
+    return failPlacement({
+      status: 500,
+      message: 'Order creation failed. Please try again.',
+      code: 'ORDER_CREATE_FAILED',
+      details: { error: error?.message || String(error) },
+    });
+  }
+
+  console.log(`[Trading] Order placed: ${sideNorm} ${qtyNum} ${symbol} @ Raw ₹${rawEntryPrice}, Effective ₹${effectiveEntryPrice}`);
+
+  res.status(201).json({
+    success: true,
+    message: requiresApproval ? 'Order pending broker approval.' : 'Order placed successfully.',
+    order: {
+      id: order._id,
+      orderId: order.order_id,
+      symbol: order.symbol,
+      side: order.side,
+      quantity: order.quantity,
+      price: order.price,
+      rawEntryPrice: order.raw_entry_price,
+      effectiveEntryPrice: order.effective_entry_price,
+      entrySpreadApplied: order.entry_spread_applied,
+      pricingBucket: order.pricing_bucket,
+      status: order.status,
+      requiresApproval,
+    },
+  });
+});
+
+/**
+ * @desc     Get orders
+ * @route    GET /api/customer/orders
+ * @access   Private (Customer only)
+ */
+const getOrders = asyncHandler(async (req, res) => {
+  const customerIdStr = req.user.customer_id;
+  const brokerIdStr = req.user.stringBrokerId;
+  const { status, date, page = 1, limit = 50 } = req.query;
+
+  const query = {
+    customer_id_str: customerIdStr,
+    broker_id_str: brokerIdStr,
+  };
+
+  if (status && status !== 'all') {
+    query.status = status.toUpperCase();
+  }
+
+  if (date) {
+    const start = new Date(date);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(date);
+    end.setHours(23, 59, 59, 999);
+    query.createdAt = { $gte: start, $lte: end };
+  }
+
+  const skip = (parseInt(page) - 1) * parseInt(limit);
+
+  const [orders, total] = await Promise.all([
+    OrderModel.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit)),
+    OrderModel.countDocuments(query),
+  ]);
+
+  res.status(200).json({
+    success: true,
+    orders: orders.map(o => ({
+      id: o._id,
+      orderId: o.order_id,
+      symbol: o.symbol,
+      side: o.side,
+      quantity: o.quantity,
+      price: o.price,
+      orderType: o.order_type,
+      product: o.product,
+      status: o.status || o.order_status,
+      exchange: o.exchange,
+      segment: o.segment,
+      instrument_token: o.instrument_token,
+      lot_size: o.lot_size,
+      lots: o.lots,
+      stop_loss: o.stop_loss,
+      target: o.target,
+      exit_price: o.exit_price,
+      exit_reason: o.exit_reason,
+      exit_at: o.exit_at,
+      closed_ltp: o.closed_ltp,
+      closed_at: o.closed_at,
+      raw_entry_price: o.raw_entry_price,
+      effective_entry_price: o.effective_entry_price,
+      entry_spread_applied: o.entry_spread_applied,
+      raw_exit_price: o.raw_exit_price,
+      effective_exit_price: o.effective_exit_price,
+      exit_spread_applied: o.exit_spread_applied,
+      pricing_bucket: o.pricing_bucket,
+      brokerage: o.brokerage,
+      brokerage_breakdown: o.brokerage_breakdown,
+      realized_pnl: o.realized_pnl,
+      settlement_status: o.settlement_status,
+      placed_at: o.placed_at,
+      came_From: o.came_From,
+      jobbin_price: o.increase_price,
+      margin_blocked: o.margin_blocked,
+      order_status: o.order_status,
+      exit_allowed: o.exit_allowed ?? false,
+      requires_approval: o.requires_approval,
+      approval_status: o.approval_status,
+      validity_mode: o.validity_mode,
+      validity_started_at: o.validity_started_at,
+      validity_expires_at: o.validity_expires_at,
+      validity_extended_count: o.validity_extended_count,
+    })),
+    pagination: {
+      page: parseInt(page),
+      limit: parseInt(limit),
+      total,
+      pages: Math.ceil(total / parseInt(limit)),
+    },
+  });
+});
+
+/**
+ * @desc     Modify order
+ * @route    PUT /api/customer/orders/:id
+ * @access   Private (Customer only)
+ */
+const modifyOrder = asyncHandler(async (req, res) => {
+  const customerIdStr = req.user.customer_id;
+  const brokerIdStr = req.user.stringBrokerId;
+  const { id } = req.params;
+  const { price, quantity, triggerPrice } = req.body;
+
+  const order = await OrderModel.findOne({
+    _id: id,
+    customer_id_str: customerIdStr,
+    broker_id_str: brokerIdStr,
+    status: { $in: ['OPEN', 'PENDING'] },
+  });
+
+  if (!order) {
+    return res.status(404).json({
+      success: false,
+      message: 'Order not found or cannot be modified.',
+    });
+  }
+
+  if (isLongTermProduct(order.product) && !isBrokerImpersonationBypass(req)) {
+    const marketStatus = getStandardMarketStatus();
+    if (!marketStatus.isOpen) {
+      return res.status(403).json(marketClosedPayload());
+    }
+  }
+
+  // Store old values
+  const oldPrice = order.price;
+  const oldQuantity = order.quantity;
+
+  if (price !== undefined && price !== null) {
+    const rawPrice = toNumber(price);
+    if (rawPrice <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'price must be a positive number.',
+      });
+    }
+
+    const pricingConfig = await getClientPricingConfig({
+      brokerIdStr: String(brokerIdStr),
+      customerIdStr: String(customerIdStr),
+    });
+    const pricingBucket = order.pricing_bucket || inferPricingBucket({
+      exchange: order.exchange,
+      segment: order.segment,
+      symbol: order.symbol,
+      orderType: order.order_type,
+    });
+    const spreadForBucket = getSpreadForBucket(pricingConfig, pricingBucket);
+    const entryPricing = applySpreadToPrice({
+      rawPrice,
+      side: order.side,
+      spread: spreadForBucket,
+    });
+
+    order.raw_entry_price = entryPricing.rawPrice;
+    order.effective_entry_price = entryPricing.effectivePrice;
+    order.entry_spread_applied = entryPricing.appliedSpread;
+    order.price = entryPricing.effectivePrice;
+    order.pricing_bucket = pricingBucket;
+  }
+
+  if (quantity !== undefined && quantity !== null) {
+    const qty = toNumber(quantity);
+    if (qty <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'quantity must be a positive number.',
+      });
+    }
+    order.quantity = qty;
+  }
+
+  if (triggerPrice !== undefined) order.trigger_price = triggerPrice;
+  order.modified_at = new Date();
+
+  // Adjust margin if needed
+  if (order.price !== oldPrice || order.quantity !== oldQuantity) {
+    const fund = await FundModel.findOne({
+      customer_id_str: customerIdStr,
+      broker_id_str: brokerIdStr,
+    });
+
+    if (fund) {
+      const oldMargin = order.margin_blocked || 0;
+      const newMargin = order.price * order.quantity; // Full notional (canonical rule)
+      const marginDiff = newMargin - oldMargin;
+
+      if (marginDiff > 0) {
+        const availableMargin = (fund.intraday?.available_limit || 0) - (fund.intraday?.used_limit || 0);
+        if (availableMargin < marginDiff) {
+          return res.status(400).json({
+            success: false,
+            message: 'Insufficient margin for this modification.',
+            requiredAdditional: marginDiff,
+            available: availableMargin,
+          });
+        }
+      }
+
+      fund.intraday.used_limit = (fund.intraday.used_limit || 0) + marginDiff;
+      order.margin_blocked = newMargin;
+      await fund.save();
+    }
+  }
+
+  await order.save();
+
+  res.status(200).json({
+    success: true,
+    message: 'Order modified successfully.',
+    order: {
+      id: order._id,
+      price: order.price,
+      quantity: order.quantity,
+    },
+  });
+});
+
+/**
+ * @desc     Cancel order
+ * @route    DELETE /api/customer/orders/:id
+ * @access   Private (Customer only)
+ */
+const cancelOrder = asyncHandler(async (req, res) => {
+  const customerIdStr = req.user.customer_id;
+  const brokerIdStr = req.user.stringBrokerId;
+  const { id } = req.params;
+
+  const order = await OrderModel.findOne({
+    _id: id,
+    customer_id_str: customerIdStr,
+    broker_id_str: brokerIdStr,
+    status: { $in: ['OPEN', 'PENDING', 'EXECUTED'] },
+  });
+
+  if (!order) {
+    return res.status(404).json({
+      success: false,
+      message: 'Order not found or cannot be cancelled.',
+    });
+  }
+
+  if (isLongTermProduct(order.product) && !isBrokerImpersonationBypass(req)) {
+    const marketStatus = getStandardMarketStatus();
+    if (!marketStatus.isOpen) {
+      return res.status(403).json(marketClosedPayload());
+    }
+  }
+
+  // Release margin immediately on cancel
+  if (order.margin_blocked && !order.margin_released_at) {
+    const fund = await FundModel.findOne({
+      customer_id_str: customerIdStr,
+      broker_id_str: brokerIdStr,
+    });
+
+    if (fund) {
+      releaseMarginOnClose(fund, order, {
+        reason: 'customer_cancel',
+        orderId: String(order._id),
+      });
+      order.margin_released_at = new Date();
+      await fund.save();
+    }
+  }
+
+  order.status = 'CANCELLED';
+  order.order_status = 'CANCELLED';
+  order.margin_blocked = 0;
+  order.cancelled_at = new Date();
+  await order.save();
+
+  res.status(200).json({
+    success: true,
+    message: 'Order cancelled successfully.',
+  });
+});
+
+/**
+ * @desc     Get holdings
+ * @route    GET /api/customer/holdings
+ * @access   Private (Customer only)
+ */
+const getHoldings = asyncHandler(async (req, res) => {
+  const customerId = req.user._id;
+
+  const holdings = await HoldingModel.find({ customer_id: customerId });
+
+  const formattedHoldings = holdings.map(h => ({
+    id: h._id,
+    symbol: h.tradingSymbol || h.symbol,
+    exchange: h.exchange,
+    quantity: h.quantity,
+    averagePrice: h.averagePrice,
+    currentPrice: h.currentPrice || h.averagePrice,
+    pnl: ((h.currentPrice || h.averagePrice) - h.averagePrice) * h.quantity,
+    pnlPercentage: h.averagePrice > 0 
+      ? (((h.currentPrice || h.averagePrice) - h.averagePrice) / h.averagePrice * 100).toFixed(2)
+      : 0,
+    investedValue: h.averagePrice * h.quantity,
+    currentValue: (h.currentPrice || h.averagePrice) * h.quantity,
+  }));
+
+  const totalInvested = formattedHoldings.reduce((sum, h) => sum + h.investedValue, 0);
+  const totalCurrent = formattedHoldings.reduce((sum, h) => sum + h.currentValue, 0);
+
+  res.status(200).json({
+    success: true,
+    holdings: formattedHoldings,
+    summary: {
+      totalHoldings: holdings.length,
+      totalInvested,
+      currentValue: totalCurrent,
+      totalPnl: totalCurrent - totalInvested,
+      pnlPercentage: totalInvested > 0 
+        ? ((totalCurrent - totalInvested) / totalInvested * 100).toFixed(2)
+        : 0,
+    },
+  });
+});
+
+/**
+ * @desc     Get positions
+ * @route    GET /api/customer/positions
+ * @access   Private (Customer only)
+ */
+const getPositions = asyncHandler(async (req, res) => {
+  const customerId = req.user._id;
+
+  const positions = await PositionsModel.find({ customer_id: customerId });
+
+  const formattedPositions = positions.map(p => ({
+    id: p._id,
+    symbol: p.tradingSymbol || p.symbol,
+    exchange: p.exchange,
+    product: p.product,
+    quantity: p.quantity,
+    side: p.quantity > 0 ? 'LONG' : 'SHORT',
+    averagePrice: p.averagePrice,
+    ltp: p.ltp || p.averagePrice,
+    pnl: p.pnl || 0,
+    realizedPnl: p.realizedPnl || 0,
+    unrealizedPnl: p.unrealizedPnl || 0,
+  }));
+
+  const totalPnl = formattedPositions.reduce((sum, p) => sum + (p.pnl || 0), 0);
+  const realizedPnl = formattedPositions.reduce((sum, p) => sum + (p.realizedPnl || 0), 0);
+  const unrealizedPnl = formattedPositions.reduce((sum, p) => sum + (p.unrealizedPnl || 0), 0);
+
+  res.status(200).json({
+    success: true,
+    positions: formattedPositions,
+    summary: {
+      totalPositions: positions.length,
+      totalPnl,
+      realizedPnl,
+      unrealizedPnl,
+    },
+  });
+});
+
+/**
+ * @desc     Get watchlist
+ * @route    GET /api/customer/watchlist
+ * @access   Private (Customer only)
+ */
+const getWatchlist = asyncHandler(async (req, res) => {
+  const customerIdStr = req.user.customer_id;
+  const brokerIdStr = req.user.stringBrokerId || req.user.broker_id_str || req.user.attached_broker_id?.toString();
+
+  if (!customerIdStr || !brokerIdStr) {
+    return res.status(400).json({ success: false, message: 'customer_id or broker_id missing' });
+  }
+
+  const DEFAULT_LIST = 'Watchlist 1';
+
+  let watchlists = await UserWatchlistModel.find({
+    customer_id_str: customerIdStr,
+    broker_id_str: brokerIdStr,
+  })
+    .sort({ createdAt: 1 })
+    .lean();
+
+  if (!watchlists || watchlists.length === 0) {
+    const created = await UserWatchlistModel.create({
+      customer_id_str: customerIdStr,
+      broker_id_str: brokerIdStr,
+      name: DEFAULT_LIST,
+      instruments: [],
+    });
+    watchlists = [created.toObject()];
+  }
+
+  const tokenSet = new Set();
+  const symbolSet = new Set();
+
+  watchlists.forEach((list) => {
+    (list.instruments || []).forEach((item) => {
+      if (item.instrumentToken) tokenSet.add(String(item.instrumentToken));
+      if (item.symbol) symbolSet.add(String(item.symbol).toUpperCase());
+    });
+  });
+
+  const [tokenDocs, symbolDocs] = await Promise.all([
+    tokenSet.size
+      ? Instrument.find({ instrument_token: { $in: Array.from(tokenSet) } })
+        .select('instrument_token tradingsymbol name exchange segment expiry instrument_type lot_size')
+        .lean()
+      : [],
+    symbolSet.size
+      ? Instrument.find({ tradingsymbol: { $in: Array.from(symbolSet) } })
+        .select('instrument_token tradingsymbol name exchange segment expiry instrument_type lot_size')
+        .lean()
+      : [],
+  ]);
+
+  const tokenMap = new Map(tokenDocs.map((doc) => [String(doc.instrument_token), doc]));
+  const symbolSegmentMap = new Map();
+  const symbolExchangeMap = new Map();
+  const symbolMap = new Map();
+  symbolDocs.forEach((doc) => {
+    const symbolKey = String(doc.tradingsymbol || '').toUpperCase();
+    const segmentKey = String(doc.segment || '').toUpperCase();
+    const exchangeKey = String(doc.exchange || '').toUpperCase();
+    if (!symbolKey) return;
+
+    symbolMap.set(symbolKey, doc);
+    if (segmentKey) symbolSegmentMap.set(`${symbolKey}|${segmentKey}`, doc);
+    if (exchangeKey) symbolExchangeMap.set(`${symbolKey}|${exchangeKey}`, doc);
+  });
+
+  const normalized = watchlists.map((list) => {
+    const instruments = (list.instruments || []).map((item) => {
+      const tokenKey = item.instrumentToken ? String(item.instrumentToken) : null;
+      const symbolKey = item.symbol ? String(item.symbol).toUpperCase() : null;
+      const segmentKey = item.segment ? String(item.segment).toUpperCase() : null;
+      const exchangeKey = item.exchange ? String(item.exchange).toUpperCase() : null;
+      const lookup = (tokenKey && tokenMap.get(tokenKey))
+        || (symbolKey && segmentKey && symbolSegmentMap.get(`${symbolKey}|${segmentKey}`))
+        || (symbolKey && exchangeKey && symbolExchangeMap.get(`${symbolKey}|${exchangeKey}`))
+        || (symbolKey && symbolMap.get(symbolKey));
+
+      return {
+        ...item,
+        name: item.name || lookup?.name || lookup?.tradingsymbol || item.symbol,
+        instrumentToken: item.instrumentToken || lookup?.instrument_token,
+        exchange: item.exchange || lookup?.exchange || item.segment,
+        segment: item.segment || lookup?.segment,
+        instrument_type: item.instrument_type || lookup?.instrument_type || null,
+        lot_size: item.lot_size || lookup?.lot_size || null,
+        expiry: item.expiry || lookup?.expiry || null,
+      };
+    });
+
+    return {
+      id: list._id,
+      name: list.name === 'Default' ? DEFAULT_LIST : list.name,
+      instruments,
+      createdAt: list.createdAt,
+    };
+  });
+
+  const active = normalized[0]?.name || DEFAULT_LIST;
+  const count = normalized.reduce((sum, list) => sum + (list.instruments?.length || 0), 0);
+
+  res.status(200).json({
+    success: true,
+    watchlists: normalized,
+    watchlist: normalized[0]?.instruments || [],
+    active,
+    count,
+  });
+});
+
+/**
+ * @desc     Update watchlist
+ * @route    PUT /api/customer/watchlist
+ * @access   Private (Customer only)
+ */
+const updateWatchlist = asyncHandler(async (req, res) => {
+  const customerIdStr = req.user.customer_id;
+  const brokerIdStr = req.user.stringBrokerId || req.user.broker_id_str || req.user.attached_broker_id?.toString();
+  const {
+    instruments,
+    action,
+    symbol,
+    listName,
+    name,
+    instrumentToken,
+    exchange,
+    segment,
+    instrumentName,
+    expiry,
+    instrument_type,
+    lot_size,
+  } = req.body;
+
+  if (!customerIdStr || !brokerIdStr) {
+    return res.status(400).json({ success: false, message: 'customer_id or broker_id missing' });
+  }
+
+  const DEFAULT_LIST = 'Watchlist 1';
+  const MAX_LISTS = 5;
+  const desiredName = String(listName || name || DEFAULT_LIST).trim();
+  const effectiveName = desiredName || DEFAULT_LIST;
+
+  if (action === 'create') {
+    const existingLists = await UserWatchlistModel.find({
+      customer_id_str: customerIdStr,
+      broker_id_str: brokerIdStr,
+    }).lean();
+
+    if (existingLists.length >= MAX_LISTS) {
+      return res.status(400).json({ success: false, message: `Maximum ${MAX_LISTS} watchlists allowed.` });
+    }
+
+    const existingNames = new Set(existingLists.map((list) => (list.name === 'Default' ? DEFAULT_LIST : list.name)));
+    let finalName = effectiveName;
+    if (!finalName || existingNames.has(finalName)) {
+      for (let i = 1; i <= MAX_LISTS; i += 1) {
+        const candidate = `Watchlist ${i}`;
+        if (!existingNames.has(candidate)) {
+          finalName = candidate;
+          break;
+        }
+      }
+    }
+
+    const created = await UserWatchlistModel.create({
+      customer_id_str: customerIdStr,
+      broker_id_str: brokerIdStr,
+      name: finalName || DEFAULT_LIST,
+      instruments: [],
+    });
+
+    const updatedLists = await UserWatchlistModel.find({
+      customer_id_str: customerIdStr,
+      broker_id_str: brokerIdStr,
+    })
+      .sort({ createdAt: 1 })
+      .lean();
+
+    return res.status(200).json({
+      success: true,
+      message: 'Watchlist created.',
+      watchlist: created.instruments,
+      watchlists: updatedLists.map((list) => ({
+        id: list._id,
+        name: list.name === 'Default' ? DEFAULT_LIST : list.name,
+        instruments: list.instruments || [],
+      })),
+      active: created.name === 'Default' ? DEFAULT_LIST : created.name,
+    });
+  }
+
+  const listQuery = {
+    customer_id_str: customerIdStr,
+    broker_id_str: brokerIdStr,
+    name: effectiveName,
+  };
+
+  if (effectiveName === DEFAULT_LIST) {
+    delete listQuery.name;
+    listQuery.$or = [{ name: DEFAULT_LIST }, { name: 'Default' }];
+  }
+
+  let watchlist = await UserWatchlistModel.findOne(listQuery);
+
+  if (!watchlist) {
+    const existingCount = await UserWatchlistModel.countDocuments({
+      customer_id_str: customerIdStr,
+      broker_id_str: brokerIdStr,
+    });
+    if (existingCount >= MAX_LISTS) {
+      return res.status(400).json({ success: false, message: `Maximum ${MAX_LISTS} watchlists allowed.` });
+    }
+
+    watchlist = await UserWatchlistModel.create({
+      customer_id_str: customerIdStr,
+      broker_id_str: brokerIdStr,
+      name: effectiveName,
+      instruments: [],
+    });
+  }
+
+  if (instruments) {
+    watchlist.instruments = instruments;
+  } else if (action === 'add' && symbol) {
+    const normalizedSymbol = String(symbol || '').trim().toUpperCase();
+    const normalizedToken = instrumentToken ? String(instrumentToken).trim() : '';
+    const normalizedSegment = String(segment || '').trim().toUpperCase();
+    const normalizedExchange = String(exchange || '').trim().toUpperCase();
+
+    const existing = watchlist.instruments.find((item) => {
+      const itemToken = item?.instrumentToken ? String(item.instrumentToken).trim() : '';
+      const itemSymbol = String(item?.symbol || '').trim().toUpperCase();
+      const itemSegment = String(item?.segment || '').trim().toUpperCase();
+      const itemExchange = String(item?.exchange || '').trim().toUpperCase();
+
+      if (normalizedToken && itemToken && itemToken === normalizedToken) return true;
+      if (itemSymbol !== normalizedSymbol) return false;
+      if (normalizedSegment && itemSegment && itemSegment === normalizedSegment) return true;
+      if (normalizedExchange && itemExchange && itemExchange === normalizedExchange) return true;
+
+      return !normalizedToken && !normalizedSegment && !normalizedExchange;
+    });
+
+    let resolvedExpiry = expiry || null;
+    let resolvedInstrumentType = instrument_type || null;
+    let resolvedLotSize = lot_size || null;
+
+    if ((!resolvedExpiry || !resolvedInstrumentType || !resolvedLotSize) && normalizedToken) {
+      const instrumentDoc = await Instrument.findOne({ instrument_token: normalizedToken })
+        .select('expiry instrument_type lot_size')
+        .lean();
+      resolvedExpiry = resolvedExpiry || instrumentDoc?.expiry || null;
+      resolvedInstrumentType = resolvedInstrumentType || instrumentDoc?.instrument_type || null;
+      resolvedLotSize = resolvedLotSize || instrumentDoc?.lot_size || null;
+    }
+
+    if (!existing) {
+      watchlist.instruments.push({
+        symbol: normalizedSymbol,
+        name: instrumentName,
+        instrumentToken: normalizedToken || null,
+        exchange: normalizedExchange || 'NSE',
+        segment: normalizedSegment || null,
+        instrument_type: resolvedInstrumentType,
+        lot_size: resolvedLotSize,
+        expiry: resolvedExpiry,
+        addedAt: new Date(),
+      });
+    } else {
+      if (!existing.instrumentToken && normalizedToken) {
+        existing.instrumentToken = normalizedToken;
+      }
+      if (instrumentName && !existing.name) {
+        existing.name = instrumentName;
+      }
+      if (normalizedExchange && !existing.exchange) {
+        existing.exchange = normalizedExchange;
+      }
+      if (normalizedSegment && !existing.segment) {
+        existing.segment = normalizedSegment;
+      }
+      if (!existing.instrument_type && resolvedInstrumentType) {
+        existing.instrument_type = resolvedInstrumentType;
+      }
+      if (!existing.lot_size && resolvedLotSize) {
+        existing.lot_size = resolvedLotSize;
+      }
+      if (!existing.expiry && resolvedExpiry) {
+        existing.expiry = resolvedExpiry;
+      }
+    }
+  } else if (action === 'remove' && symbol) {
+    const normalizedSymbol = String(symbol || '').trim().toUpperCase();
+    const normalizedToken = instrumentToken ? String(instrumentToken).trim() : '';
+    const normalizedSegment = String(segment || '').trim().toUpperCase();
+    const normalizedExchange = String(exchange || '').trim().toUpperCase();
+
+    watchlist.instruments = watchlist.instruments.filter((item) => {
+      const itemToken = item?.instrumentToken ? String(item.instrumentToken).trim() : '';
+      const itemSymbol = String(item?.symbol || '').trim().toUpperCase();
+      const itemSegment = String(item?.segment || '').trim().toUpperCase();
+      const itemExchange = String(item?.exchange || '').trim().toUpperCase();
+
+      if (normalizedToken && itemToken) return itemToken !== normalizedToken;
+      if (itemSymbol !== normalizedSymbol) return true;
+      if (normalizedSegment && itemSegment && itemSegment !== normalizedSegment) return true;
+      if (normalizedExchange && itemExchange && itemExchange !== normalizedExchange) return true;
+      return false;
+    });
+  }
+
+  watchlist.instruments = (watchlist.instruments || []).filter(
+    (item) => item && typeof item.symbol === 'string' && item.symbol.trim().length > 0
+  );
+
+  await watchlist.save();
+
+  const updatedLists = await UserWatchlistModel.find({
+    customer_id_str: customerIdStr,
+    broker_id_str: brokerIdStr,
+  })
+    .sort({ createdAt: 1 })
+    .lean();
+
+  res.status(200).json({
+    success: true,
+    message: 'Watchlist updated.',
+    watchlist: watchlist.instruments,
+    watchlists: updatedLists.map((list) => ({
+      id: list._id,
+      name: list.name === 'Default' ? DEFAULT_LIST : list.name,
+      instruments: list.instruments || [],
+    })),
+    active: watchlist.name === 'Default' ? DEFAULT_LIST : watchlist.name,
+  });
+});
+
+export {
+  placeOrder,
+  getOrders,
+  modifyOrder,
+  cancelOrder,
+  getHoldings,
+  getPositions,
+  getWatchlist,
+  updateWatchlist,
+};

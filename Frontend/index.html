@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" href="/logo/favicon.ico" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/logo/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/logo/favicon-16x16.png" />
+    <link rel="apple-touch-icon" href="/logo/apple-touch-icon.png" />
+    <link rel="manifest" href="/logo/site.webmanifest" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OneCapital Brokerage</title>
+    <!-- Anti-flicker: apply saved theme before first paint -->
+    <script>
+      (function() {
+        try {
+          var t = localStorage.getItem('wolf_theme');
+          if (t === 'dark' || (!t && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+            document.documentElement.classList.add('dark');
+          }
+        } catch(e) {}
+      })();
+    </script>
+    <!-- Google Fonts: preconnect for faster DNS + TLS -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <!-- Inter: display=swap is fine — text fallback for body copy is acceptable -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <!-- Material Symbols: display=block hides text during load instead of showing raw icon names -->
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=block" rel="stylesheet">
+    <!-- Hide icons until Material Symbols font is ready; prevents raw name flash (arrow_forward, badge, etc.) -->
+    <style>
+      .material-symbols-outlined { visibility: hidden; }
+    </style>
+    <script>
+      (function () {
+        var reveal = function () {
+          document.documentElement.classList.add('fonts-loaded');
+        };
+        // Safety net: always reveal after 4 s even if font API fails
+        var t = setTimeout(reveal, 4000);
+        try {
+          document.fonts.load('400 1em "Material Symbols Outlined"')
+            .then(function () { clearTimeout(t); reveal(); })
+            .catch(function () { clearTimeout(t); reveal(); });
+        } catch (e) {
+          clearTimeout(t); reveal();
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
