@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useCallback } from 'react';
 import { createChart, CrosshairMode, LineSeries, TickMarkType } from 'lightweight-charts';
 
 const IST_TIME_ZONE = 'Asia/Kolkata';
@@ -89,47 +89,58 @@ const normalizeLineData = (candles) => {
     .map(([time, value]) => ({ time, value }));
 };
 
-const TradingChart = ({ candles = [], timeframe = '1D', livePrice = null }) => {
+const isDarkMode = () =>
+  typeof document !== 'undefined' &&
+  document.documentElement.classList.contains('dark');
+
+// Intervals that show intraday candles — time (HH:MM) must be visible on x-axis
+const INTRADAY_KEYS = new Set(['1m', '3m', '5m', '10m', '15m', '30m', '1H']);
+
+const TradingChart = ({ candles = [], intervalKey = '5m', livePrice = null, onCrosshairMove }) => {
   const containerRef = useRef(null);
   const chartRef = useRef(null);
   const lineSeriesRef = useRef(null);
   const priceLineRef = useRef(null);
-  const resizeObserverRef = useRef(null);
-  const windowResizeHandlerRef = useRef(null);
+  // Use a ref for the callback to avoid stale closures inside the mount useEffect
+  const onCrosshairMoveRef = useRef(onCrosshairMove);
+  useEffect(() => { onCrosshairMoveRef.current = onCrosshairMove; }, [onCrosshairMove]);
 
   const lineData = useMemo(() => normalizeLineData(candles), [candles]);
 
   useEffect(() => {
     if (!containerRef.current) return undefined;
 
-    const container = containerRef.current;
-    const chart = createChart(container, {
-      width: container.clientWidth || 400,
-      height: container.clientHeight || 320,
+    const dark = isDarkMode();
+
+    // autoSize: true handles all resizing internally via its own ResizeObserver.
+    // Do NOT add a manual ResizeObserver alongside it — they conflict and cause
+    // the canvas to render at wrong pixel dimensions, misaligning lines and axes.
+    const chart = createChart(containerRef.current, {
       autoSize: true,
       layout: {
-        background: { color: '#ffffff' },
-        textColor: '#617589',
+        background: { color: dark ? '#111b17' : '#ffffff' },
+        textColor: dark ? '#9cb7aa' : '#617589',
       },
       grid: {
-        vertLines: { color: '#f0f2f4' },
-        horzLines: { color: '#f0f2f4' },
+        vertLines: { color: dark ? '#22352d' : '#f0f2f4' },
+        horzLines: { color: dark ? '#22352d' : '#f0f2f4' },
       },
       crosshair: {
         mode: CrosshairMode.Normal,
         vertLine: {
-          color: '#95a6b5',
+          color: dark ? '#6f8b7f' : '#95a6b5',
           width: 1,
           labelBackgroundColor: '#137fec',
         },
         horzLine: {
-          color: '#95a6b5',
+          color: dark ? '#6f8b7f' : '#95a6b5',
           width: 1,
           labelBackgroundColor: '#137fec',
         },
       },
       rightPriceScale: {
-        borderColor: '#f0f2f4',
+        borderColor: dark ? '#22352d' : '#f0f2f4',
+        entireTextOnly: true,
       },
       localization: {
         locale: 'en-IN',
@@ -140,9 +151,14 @@ const TradingChart = ({ candles = [], timeframe = '1D', livePrice = null }) => {
         },
       },
       timeScale: {
-        borderColor: '#f0f2f4',
+        borderColor: dark ? '#22352d' : '#f0f2f4',
         timeVisible: true,
         secondsVisible: false,
+        // Right padding so the live price label doesn't clip the last data point
+        rightOffset: 12,
+        // Prevent scrolling past data edges
+        fixLeftEdge: true,
+        minBarSpacing: 3,
         tickMarkFormatter: (time, tickMarkType) => {
           const seconds = toUnixSeconds(time);
           if (seconds == null) return null;
@@ -183,9 +199,11 @@ const TradingChart = ({ candles = [], timeframe = '1D', livePrice = null }) => {
       color: '#137fec',
       lineWidth: 2,
       crosshairMarkerVisible: true,
-      crosshairMarkerRadius: 3,
+      crosshairMarkerRadius: 4,
       lastValueVisible: true,
-      priceLineVisible: true,
+      // Disable the built-in price line — we create a manual one for the live price
+      // to avoid two overlapping horizontal lines at the same value
+      priceLineVisible: false,
       priceFormat: {
         type: 'price',
         precision: 2,
@@ -196,34 +214,22 @@ const TradingChart = ({ candles = [], timeframe = '1D', livePrice = null }) => {
     chartRef.current = chart;
     lineSeriesRef.current = lineSeries;
 
-    const resizeChart = () => {
-      if (!containerRef.current || !chartRef.current) return;
-      const { width, height } = containerRef.current.getBoundingClientRect();
-      if (!width || !height) return;
-      chartRef.current.applyOptions({ width, height });
+    // Subscribe to crosshair move so parent can update OHLC stats to the hovered candle
+    const handleCrosshairMove = (param) => {
+      if (!param.time || !param.point) {
+        // Crosshair left chart area — clear hovered candle
+        onCrosshairMoveRef.current?.(null);
+        return;
+      }
+      // param.time is the UTCTimestamp (Unix seconds) of the data point under the crosshair
+      onCrosshairMoveRef.current?.(param.time);
     };
-
-    if (typeof ResizeObserver !== 'undefined') {
-      resizeObserverRef.current = new ResizeObserver(resizeChart);
-      resizeObserverRef.current.observe(container);
-    } else {
-      windowResizeHandlerRef.current = resizeChart;
-      window.addEventListener('resize', windowResizeHandlerRef.current);
-    }
-
-    resizeChart();
+    chart.subscribeCrosshairMove(handleCrosshairMove);
 
     return () => {
-      if (resizeObserverRef.current) {
-        resizeObserverRef.current.disconnect();
-        resizeObserverRef.current = null;
-      }
-      if (windowResizeHandlerRef.current) {
-        window.removeEventListener('resize', windowResizeHandlerRef.current);
-        windowResizeHandlerRef.current = null;
-      }
+      chart.unsubscribeCrosshairMove(handleCrosshairMove);
       if (lineSeriesRef.current && priceLineRef.current) {
-        lineSeriesRef.current.removePriceLine(priceLineRef.current);
+        try { lineSeriesRef.current.removePriceLine(priceLineRef.current); } catch (_) {}
         priceLineRef.current = null;
       }
       chart.remove();
@@ -232,6 +238,7 @@ const TradingChart = ({ candles = [], timeframe = '1D', livePrice = null }) => {
     };
   }, []);
 
+  // Set data and fit content whenever candles change
   useEffect(() => {
     if (!lineSeriesRef.current) return;
     lineSeriesRef.current.setData(lineData);
@@ -240,33 +247,37 @@ const TradingChart = ({ candles = [], timeframe = '1D', livePrice = null }) => {
     }
   }, [lineData]);
 
+  // Show time (HH:MM) on x-axis for intraday intervals, dates only for daily
   useEffect(() => {
     if (!chartRef.current) return;
     chartRef.current.timeScale().applyOptions({
-      timeVisible: timeframe === '1D',
+      timeVisible: INTRADAY_KEYS.has(intervalKey),
       secondsVisible: false,
     });
-  }, [timeframe]);
+  }, [intervalKey]);
 
+  // Overlay live price as a single clean horizontal line
   useEffect(() => {
     const lineSeries = lineSeriesRef.current;
     if (!lineSeries) return;
 
     if (priceLineRef.current) {
-      lineSeries.removePriceLine(priceLineRef.current);
+      try { lineSeries.removePriceLine(priceLineRef.current); } catch (_) {}
       priceLineRef.current = null;
     }
 
     const price = Number(livePrice);
     if (!Number.isFinite(price) || lineData.length === 0) return;
 
+    // Extend the line tip to the live price at the last known timestamp
     const lastTime = lineData[lineData.length - 1].time;
     lineSeries.update({ time: lastTime, value: price });
+
     priceLineRef.current = lineSeries.createPriceLine({
       price,
       color: '#137fec',
       lineWidth: 1,
-      lineStyle: 0,
+      lineStyle: 2, // dashed
       axisLabelVisible: true,
       title: 'LTP',
     });
