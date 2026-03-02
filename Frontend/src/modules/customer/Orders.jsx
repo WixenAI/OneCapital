@@ -33,12 +33,29 @@ const isActionableOrderRow = (order) => {
 const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
 const endOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);
 
-const isOrderWithinFilter = (order, filter) => {
+const startOfWeek = (d) => {
+  const monday = new Date(d);
+  const day = monday.getDay();
+  const daysSinceMonday = (day + 6) % 7;
+  monday.setDate(monday.getDate() - daysSinceMonday);
+  return startOfDay(monday);
+};
+
+const isOrderWithinFilter = (order, filter, activeTab) => {
+  if (activeTab !== 'closed') return true;
   if (filter === 'All') return true;
-  const rawDate = order.placedAt || order.placed_at || order.createdAt;
+  const status = String(order.status || order.order_status || '').toUpperCase();
+  const isClosedOrder = activeTab === 'closed' || CLOSED_ORDER_STATUSES.has(status);
+  const rawDate = isClosedOrder
+    ? (order.closed_at || order.exit_at || order.placedAt || order.placed_at || order.createdAt)
+    : (order.placedAt || order.placed_at || order.createdAt);
   if (!rawDate) return true; // no date → always show
   const date = new Date(rawDate);
+  if (Number.isNaN(date.getTime())) return true;
   const now = new Date();
+  if (filter === 'This Week') {
+    return date >= startOfWeek(now) && date <= endOfDay(now);
+  }
   if (filter === 'Today') {
     return date >= startOfDay(now) && date <= endOfDay(now);
   }
@@ -76,7 +93,7 @@ const Orders = () => {
   const { user } = useAuth();
   const holdingsExitAllowed = user?.holdingsExitAllowed === true;
   const [activeTab, setActiveTab] = useState('open');
-  const [selectedFilter, setSelectedFilter] = useState('All');
+  const [selectedFilter, setSelectedFilter] = useState('This Week');
   const [showFilters, setShowFilters] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
@@ -99,7 +116,7 @@ const Orders = () => {
   const prevLivePricesRef = useRef({});
   const hasConnectedOnceRef = useRef(false);
 
-  const filters = ['All', 'Today', 'Last 7 Days', 'Last 30 Days', 'Custom'];
+  const filters = ['This Week', 'All', 'Today', 'Last 7 Days', 'Last 30 Days', 'Custom'];
 
   const applyOrdersState = useCallback((nextState) => {
     setOpenOrders(nextState?.openOrders || []);
@@ -504,7 +521,7 @@ const Orders = () => {
 
   const filteredOrders = orders.filter(order =>
     order.symbol?.toLowerCase().includes(searchTerm.toLowerCase()) &&
-    isOrderWithinFilter(order, selectedFilter)
+    isOrderWithinFilter(order, selectedFilter, activeTab)
   );
 
   const tabConfig = [

@@ -27,6 +27,28 @@ const normalizeProduct = (value) => String(value || '').trim().toUpperCase();
 const isLongTermProduct = (value) => ['CNC', 'NRML'].includes(normalizeProduct(value));
 const isBrokerImpersonationBypass = (req) =>
   req.user?.isImpersonation && req.user?.impersonatorRole === 'broker';
+const ORDER_DATE_FIELDS = new Set(['createdAt', 'placed_at', 'closed_at', 'exit_at']);
+
+const resolveOrderDateField = (input) => {
+  const normalized = String(input || '').trim();
+  if (!ORDER_DATE_FIELDS.has(normalized)) return 'createdAt';
+  return normalized;
+};
+
+const parseOrderDateParam = (value, endOfDay = false) => {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return null;
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    if (endOfDay) parsed.setUTCHours(23, 59, 59, 999);
+    else parsed.setUTCHours(0, 0, 0, 0);
+  }
+
+  return parsed;
+};
 
 const marketClosedPayload = () => {
   const marketStatus = getStandardMarketStatus();
@@ -315,30 +337,56 @@ const placeOrder = asyncHandler(async (req, res) => {
 const getOrders = asyncHandler(async (req, res) => {
   const customerIdStr = req.user.customer_id;
   const brokerIdStr = req.user.stringBrokerId;
-  const { status, date, page = 1, limit = 50 } = req.query;
+  const {
+    status,
+    date,
+    from,
+    to,
+    dateField,
+    page = 1,
+    limit = 50,
+  } = req.query;
 
   const query = {
     customer_id_str: customerIdStr,
     broker_id_str: brokerIdStr,
   };
+  let sortField = 'createdAt';
 
   if (status && status !== 'all') {
     query.status = status.toUpperCase();
   }
 
-  if (date) {
-    const start = new Date(date);
-    start.setHours(0, 0, 0, 0);
-    const end = new Date(date);
-    end.setHours(23, 59, 59, 999);
-    query.createdAt = { $gte: start, $lte: end };
+  const hasDateRange = Boolean(date || from || to);
+  if (hasDateRange) {
+    const explicitDateField = Object.prototype.hasOwnProperty.call(req.query, 'dateField');
+    const resolvedDateField = resolveOrderDateField(dateField);
+    const rangeField = explicitDateField ? resolvedDateField : (from || to ? resolvedDateField : 'createdAt');
+    sortField = rangeField;
+
+    let start = null;
+    let end = null;
+
+    if (from || to) {
+      start = parseOrderDateParam(from, false);
+      end = parseOrderDateParam(to, true);
+    } else if (date) {
+      start = parseOrderDateParam(date, false);
+      end = parseOrderDateParam(date, true);
+    }
+
+    if (start || end) {
+      query[rangeField] = {};
+      if (start) query[rangeField].$gte = start;
+      if (end) query[rangeField].$lte = end;
+    }
   }
 
   const skip = (parseInt(page) - 1) * parseInt(limit);
 
   const [orders, total] = await Promise.all([
     OrderModel.find(query)
-      .sort({ createdAt: -1 })
+      .sort({ [sortField]: -1, createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit)),
     OrderModel.countDocuments(query),
@@ -392,6 +440,13 @@ const getOrders = asyncHandler(async (req, res) => {
       validity_expires_at: o.validity_expires_at,
       validity_extended_count: o.validity_extended_count,
     })),
+    filters: {
+      status: status && status !== 'all' ? String(status).toUpperCase() : 'all',
+      dateField: resolveOrderDateField(dateField),
+      date: date || null,
+      from: from || null,
+      to: to || null,
+    },
     pagination: {
       page: parseInt(page),
       limit: parseInt(limit),

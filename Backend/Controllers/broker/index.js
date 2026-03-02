@@ -10,3 +10,4 @@ export * from './OrderController.js';
 export * from './WithdrawalController.js';
 export * from './PaymentController.js';
 export * from './SettingsController.js';
+export * from './SettlementController.js';

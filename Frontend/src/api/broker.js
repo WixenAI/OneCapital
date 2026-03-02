@@ -144,7 +144,7 @@ const brokerApi = {
     return response.data;
   },
 
-  getClientHoldingsOrders: async (clientId) => {
+  getClientHoldingsOrders: async () => {
     // Uses customer portfolio API via impersonation token
     const response = await api.get('/customer/portfolio/holdings');
     return response.data;
@@ -358,6 +358,16 @@ const brokerApi = {
 
   updateNotifications: async (notifications) => {
     const response = await api.put('/broker/settings/notifications', notifications);
+    return response.data;
+  },
+
+  runWeeklySettlement: async (payload = {}) => {
+    const response = await api.post('/broker/settlement/weekly/run', payload);
+    return response.data;
+  },
+
+  getWeeklySettlementHistory: async (params = {}) => {
+    const response = await api.get('/broker/settlement/weekly/history', { params });
     return response.data;
   },
 

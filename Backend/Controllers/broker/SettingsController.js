@@ -39,6 +39,12 @@ const getSettings = asyncHandler(async (req, res) => {
       trading: {
         defaultOrderType: broker.settings?.default_order_type || 'MIS',
       },
+      // Weekly settlement
+      settlement: {
+        autoWeeklySettlementEnabled: broker.settings?.settlement?.auto_weekly_settlement_enabled !== false,
+        autoSettlementDay: 'monday',
+        timezone: 'Asia/Kolkata',
+      },
       // Notifications
       notifications: {
         tradeExecutions: broker.settings?.notifications?.trade_executions ?? true,
@@ -94,6 +100,14 @@ const updateSettings = asyncHandler(async (req, res) => {
   // Update trading settings
   if (updateData.defaultOrderType) {
     broker.settings.default_order_type = updateData.defaultOrderType;
+  }
+
+  const autoSettlementToggle =
+    updateData?.settlement?.autoWeeklySettlementEnabled ??
+    updateData?.autoWeeklySettlementEnabled;
+  if (autoSettlementToggle !== undefined) {
+    if (!broker.settings.settlement) broker.settings.settlement = {};
+    broker.settings.settlement.auto_weekly_settlement_enabled = Boolean(autoSettlementToggle);
   }
 
   // Update security settings

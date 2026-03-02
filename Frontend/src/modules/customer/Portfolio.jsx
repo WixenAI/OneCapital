@@ -10,7 +10,7 @@ import useCustomerTradingGate from '../../hooks/useCustomerTradingGate';
 import { useAuth } from '../../context/AuthContext';
 import { readSessionCache, writeSessionCache, clearSessionCache } from '../../utils/sessionCache';
 
-const PORTFOLIO_CACHE_KEY = 'portfolio_tab_v1';
+const PORTFOLIO_CACHE_KEY = 'portfolio_tab_v2';
 const PORTFOLIO_CACHE_TTL_MS = 30 * 1000;
 const PORTFOLIO_REVALIDATE_AFTER_MS = 5 * 1000;
 const LIVE_TICK_MAX_AGE_MS = 3 * 1000;
@@ -111,6 +111,17 @@ const parseDate = (value) => {
   return Number.isNaN(d.getTime()) ? null : d;
 };
 
+const formatIstDateOnly = (value) => {
+  const date = parseDate(value);
+  if (!date) return '';
+  return date.toLocaleDateString('en-IN', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'Asia/Kolkata',
+  });
+};
+
 const formatCurrency = (value) =>
   `₹${Math.abs(toNumber(value)).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
@@ -134,9 +145,11 @@ const isActionableOrderRow = (order) => {
 };
 const isLongTermProduct = (product) => ['CNC', 'NRML'].includes(String(product || '').toUpperCase());
 
-const isWithinFilter = ({ date, filter, customFrom, customTo }) => {
+const isWithinFilter = ({ date, filter, customFrom, customTo, sessionBoundaryStart }) => {
   if (filter === 'all') return true;
-  if (!date) return false;
+
+  const effectiveDate = parseDate(date);
+  if (!effectiveDate) return false;
 
   const now = new Date();
   let from = null;
@@ -144,6 +157,17 @@ const isWithinFilter = ({ date, filter, customFrom, customTo }) => {
 
   if (filter === 'today') {
     from = startOfDay(now);
+  } else if (filter === 'session') {
+    const parsedBoundary = parseDate(sessionBoundaryStart);
+    if (parsedBoundary) {
+      from = parsedBoundary;
+    } else {
+      const monday = new Date(now);
+      const day = monday.getDay();
+      const daysSinceMonday = (day + 6) % 7;
+      monday.setDate(monday.getDate() - daysSinceMonday);
+      from = startOfDay(monday);
+    }
   } else if (filter === 'last7') {
     from = startOfDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6));
   } else if (filter === 'last30') {
@@ -155,7 +179,7 @@ const isWithinFilter = ({ date, filter, customFrom, customTo }) => {
   }
 
   if (!from || !to) return true;
-  return date >= from && date <= to;
+  return effectiveDate >= from && effectiveDate <= to;
 };
 
 const sanitizeCachedPortfolioRow = (item) => {
@@ -173,6 +197,8 @@ const sanitizePortfolioStateForCache = (state) => ({
   allPositions: (state?.allPositions || []).map(sanitizeCachedPortfolioRow),
   allHoldings: (state?.allHoldings || []).map(sanitizeCachedPortfolioRow),
   allOrdersTotalValue: toNumber(state?.allOrdersTotalValue),
+  sessionBoundaryStart: state?.sessionBoundaryStart || '',
+  sessionBoundaryType: state?.sessionBoundaryType || 'auto_monday',
 });
 
 const Portfolio = () => {
@@ -182,9 +208,11 @@ const Portfolio = () => {
   const { user } = useAuth();
   const holdingsExitAllowed = user?.holdingsExitAllowed === true;
   const [activeTab, setActiveTab] = useState('positions');
-  const [selectedFilter, setSelectedFilter] = useState('today');
+  const [selectedFilter, setSelectedFilter] = useState('session');
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo] = useState('');
+  const [sessionBoundaryStart, setSessionBoundaryStart] = useState('');
+  const [, setSessionBoundaryType] = useState('auto_monday');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [showFilters, setShowFilters] = useState(false);
@@ -199,12 +227,13 @@ const Portfolio = () => {
 
   const [allHoldings, setAllHoldings] = useState([]);
   const [allPositions, setAllPositions] = useState([]);
-  const [allOrdersTotalValue, setAllOrdersTotalValue] = useState(0);
+  const [, setAllOrdersTotalValue] = useState(0);
   const subscribedTokensRef = useRef(new Set());
   const prevLivePricesRef = useRef({});
   const hasConnectedOnceRef = useRef(false);
 
   const filterOptions = [
+    { key: 'session', label: 'This Week' },
     { key: 'all', label: 'All' },
     { key: 'today', label: 'Today' },
     { key: 'last7', label: 'Last 7 Days' },
@@ -216,6 +245,8 @@ const Portfolio = () => {
     setAllPositions(nextState?.allPositions || []);
     setAllHoldings(nextState?.allHoldings || []);
     setAllOrdersTotalValue(nextState?.allOrdersTotalValue || 0);
+    setSessionBoundaryStart(nextState?.sessionBoundaryStart || '');
+    setSessionBoundaryType(nextState?.sessionBoundaryType || 'auto_monday');
   }, []);
 
   const fetchPortfolio = useCallback(async (options = {}) => {
@@ -245,13 +276,20 @@ const Portfolio = () => {
     }
     setError(null);
     try {
-      const [ordersRes, holdingsRes] = await Promise.all([
+      const [ordersRes, holdingsRes, balanceRes] = await Promise.all([
         customerApi.getOrders(),
         customerApi.getHoldings().catch(() => ({ holdings: [] })),
+        customerApi.getBalance().catch(() => ({})),
       ]);
 
       const allOrders = ordersRes.orders || ordersRes.data || [];
       const holdingsData = holdingsRes.holdings || holdingsRes.data || [];
+      const boundaryStart = balanceRes?.summary?.weekBoundaryStart
+        || balanceRes?.settlement?.boundaryStart
+        || '';
+      const boundaryType = balanceRes?.summary?.weekBoundaryType
+        || balanceRes?.settlement?.boundaryType
+        || 'auto_monday';
 
       const hiddenStatuses = new Set(['CANCELLED', 'REJECTED']);
       const pendingStatuses = new Set(['PENDING', 'HOLD']);
@@ -476,6 +514,8 @@ const Portfolio = () => {
         allPositions: mappedPositions,
         allHoldings: dedupedHoldings,
         allOrdersTotalValue: totalOrderValue,
+        sessionBoundaryStart: boundaryStart,
+        sessionBoundaryType: boundaryType,
       };
       applyPortfolioState(nextState);
       writeSessionCache(PORTFOLIO_CACHE_KEY, sanitizePortfolioStateForCache(nextState));
@@ -613,30 +653,30 @@ const Portfolio = () => {
           filter: selectedFilter,
           customFrom,
           customTo,
+          sessionBoundaryStart,
         })
       ),
-    [allPositions, selectedFilter, customFrom, customTo]
+    [allPositions, selectedFilter, customFrom, customTo, sessionBoundaryStart]
   );
 
   const filteredHoldings = useMemo(
     () =>
       allHoldings.filter((item) => {
-        // Open holdings orders should remain visible regardless of date filter.
-        if (item.source === 'order' && !item.isClosed) return true;
-        if (item.source === 'api' && !item.placedAtDate) return true;
+        // Keep all open holdings visible regardless of date filter.
+        if (!item.isClosed) return true;
         return isWithinFilter({
           date: item.filterDate || item.placedAtDate,
           filter: selectedFilter,
           customFrom,
           customTo,
+          sessionBoundaryStart,
         });
       }),
-    [allHoldings, selectedFilter, customFrom, customTo]
+    [allHoldings, selectedFilter, customFrom, customTo, sessionBoundaryStart]
   );
 
   const summary = useMemo(() => {
-    // Net P&L across full history, using live prices for open items so the
-    // header card stays consistent with the per-row live P&L shown below.
+    // Net P&L across currently filtered rows.
     const computeItemPnl = (item) => {
       const isClosed = !!item.isClosed;
       let displayLtp = toNumber(item.ltp ?? item.last_price ?? item.avgPrice);
@@ -673,7 +713,7 @@ const Portfolio = () => {
       }).netPnl;
     };
 
-    const allItems = [...allHoldings, ...allPositions];
+    const allItems = [...filteredHoldings, ...filteredPositions];
     const netPnL = allItems.reduce((sum, item) => sum + computeItemPnl(item), 0);
     const totalCostBasis = allItems.reduce(
       (sum, item) => sum + toNumber(item.avgPrice) * toNumber(item.qty),
@@ -682,11 +722,11 @@ const Portfolio = () => {
     const netPnLPercent = totalCostBasis > 0 ? (netPnL / totalCostBasis) * 100 : 0;
 
     return {
-      totalValue: allOrdersTotalValue,
+      totalValue: totalCostBasis,
       netPnL,
       netPnLPercent,
     };
-  }, [allHoldings, allPositions, allOrdersTotalValue, livePrices]);
+  }, [filteredHoldings, filteredPositions, livePrices]);
 
   const netPnlValueToneClass = summary.netPnL >= 0
     ? 'text-emerald-300 drop-shadow-[0_1px_1px_rgba(0,0,0,0.2)]'
@@ -954,6 +994,14 @@ const Portfolio = () => {
                 </label>
               </div>
             )}
+            {selectedFilter === 'session' && sessionBoundaryStart && (
+              <p className="mt-2 text-[11px] text-[#617589] dark:text-[#9cb7aa]">
+                Active from{' '}
+                <span className="font-semibold text-[#111418] dark:text-[#e8f3ee]">
+                  {formatIstDateOnly(sessionBoundaryStart)}
+                </span>
+              </p>
+            )}
           </div>
         )}
       </div>
@@ -964,7 +1012,9 @@ const Portfolio = () => {
           <div className="pointer-events-none absolute inset-x-0 top-0 h-16 bg-gradient-to-b from-white/25 to-transparent" />
           <div className="relative">
             <div className="flex justify-between items-start">
-              <p className="text-white/85 text-xs sm:text-sm font-medium leading-normal">Net P&L (All Orders)</p>
+              <p className="text-white/85 text-xs sm:text-sm font-medium leading-normal">
+                Net P&L ({selectedFilter === 'session' ? 'This Week' : 'Filtered'})
+              </p>
               <span className="material-symbols-outlined text-white/75 text-[18px] sm:text-[20px]">insights</span>
             </div>
             {loading ? (
@@ -984,7 +1034,7 @@ const Portfolio = () => {
             )}
 
             <div className="mt-3 rounded-lg border border-white/25 bg-white/12 p-2.5 backdrop-blur-[2px]">
-              <p className="text-white/80 text-[10px] sm:text-[11px] uppercase tracking-[0.04em]">Total Value (All Orders)</p>
+              <p className="text-white/80 text-[10px] sm:text-[11px] uppercase tracking-[0.04em]">Total Value (Filtered)</p>
               <p className="text-white text-sm sm:text-base font-semibold mt-1">{formatCurrency(summary.totalValue)}</p>
             </div>
           </div>
@@ -1054,6 +1104,7 @@ const Portfolio = () => {
           displayRows.map((item) => {
             const status = String(item.status || item.order_status || '').toUpperCase();
             const statusLabel = item.isClosed ? 'CLOSED' : status || 'OPEN';
+            const exitAtDate = parseDate(item.exitAtDate);
             const isPendingHolding =
               activeTab === 'holdings' &&
               ['PENDING', 'PENDING_APPROVAL', 'TRIGGER_PENDING', 'AMO', 'HOLD'].includes(status);
@@ -1134,7 +1185,7 @@ const Portfolio = () => {
                     <div className="flex flex-col rounded-lg bg-[#f6f7f8] dark:bg-[#111b17] px-2 py-1.5">
                       <span className="text-[#7a8996] dark:text-[#6f8b7f] uppercase tracking-[0.04em]">Exited</span>
                       <span className="text-[#111418] dark:text-[#e8f3ee] font-medium tabular-nums">
-                        {item.exitAtDate ? item.exitAtDate.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }) : '-'}
+                        {exitAtDate ? exitAtDate.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }) : '-'}
                       </span>
                     </div>
                   )}

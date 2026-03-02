@@ -86,6 +86,13 @@ const resolveTitleAndSubtitle = (tx, category, rawType) => {
     };
   }
 
+  if (rawType === 'weekly_settlement') {
+    return {
+      title: 'Weekly Settlement Checkpoint',
+      subtitle: 'Settlement boundary recorded for weekly session',
+    };
+  }
+
   if (rawType === 'margin_refunded_rejection') {
     return {
       title: 'Margin Added',
@@ -162,6 +169,8 @@ const resolveDirection = (rawType, amount, category) => {
   ) {
     return 'credit';
   }
+
+  if (rawType === 'weekly_settlement') return 'neutral';
 
   if (category === 'payment') {
     return amount >= 0 ? 'credit' : 'debit';

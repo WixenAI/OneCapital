@@ -13,6 +13,13 @@ const Settings = () => {
   const [editingField, setEditingField] = useState(null);
   const [editValue, setEditValue] = useState('');
   const qrFileRef = useRef(null);
+  const [settlementSaving, setSettlementSaving] = useState(false);
+  const [settlementRunning, setSettlementRunning] = useState(false);
+  const [settlementNotice, setSettlementNotice] = useState('');
+  const [settlementConfig, setSettlementConfig] = useState({
+    autoWeeklySettlementEnabled: true,
+  });
+  const [settlementHistory, setSettlementHistory] = useState([]);
 
   const [broker, setBroker] = useState({
     name: '',
@@ -29,12 +36,33 @@ const Settings = () => {
     qrPhotoUrl: ''
   });
 
+  const formatSettlementDateTime = (value) => {
+    if (!value) return '-';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '-';
+    return date.toLocaleString('en-IN', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+      timeZone: 'Asia/Kolkata',
+    });
+  };
+
   const fetchSettings = useCallback(async () => {
     setLoading(true);
     try {
-      const profileRes = await brokerApi.getProfile();
+      const [profileRes, settingsRes, historyRes] = await Promise.all([
+        brokerApi.getProfile(),
+        brokerApi.getSettings().catch(() => null),
+        brokerApi.getWeeklySettlementHistory({ limit: 5 }).catch(() => ({ history: [] })),
+      ]);
 
       const p = profileRes.profile || profileRes.broker || profileRes.data || profileRes;
+      const settings = settingsRes?.settings || {};
+      const settlement = settings?.settlement || {};
 
       setBroker({
         name: p.ownerName || p.name || p.owner_name || '',
@@ -49,6 +77,11 @@ const Settings = () => {
         upiId: p.upi_id || p.upiId || '',
         qrPhotoUrl: p.payment_qr_url || p.paymentQrUrl || ''
       });
+
+      setSettlementConfig({
+        autoWeeklySettlementEnabled: settlement.autoWeeklySettlementEnabled !== false,
+      });
+      setSettlementHistory(historyRes?.history || []);
     } catch (err) {
       console.error('Failed to fetch settings:', err);
     } finally {
@@ -89,6 +122,56 @@ const Settings = () => {
   const handleLogout = () => {
     logout();
     navigate('/broker/login');
+  };
+
+  const refreshSettlementHistory = useCallback(async () => {
+    try {
+      const historyRes = await brokerApi.getWeeklySettlementHistory({ limit: 5 });
+      setSettlementHistory(historyRes?.history || []);
+    } catch (err) {
+      console.error('Failed to fetch settlement history:', err);
+    }
+  }, []);
+
+  const handleToggleAutoSettlement = async () => {
+    const nextValue = !settlementConfig.autoWeeklySettlementEnabled;
+    setSettlementSaving(true);
+    setSettlementNotice('');
+    try {
+      await brokerApi.updateSettings({
+        settlement: {
+          autoWeeklySettlementEnabled: nextValue,
+        },
+      });
+      setSettlementConfig({
+        autoWeeklySettlementEnabled: nextValue,
+      });
+      setSettlementNotice(
+        nextValue
+          ? 'Auto weekly settlement enabled (Monday 00:00 IST).'
+          : 'Auto weekly settlement disabled. Manual settlement required.'
+      );
+    } catch (err) {
+      console.error('Failed to update auto settlement setting:', err);
+      setSettlementNotice('Failed to update auto settlement setting.');
+    } finally {
+      setSettlementSaving(false);
+    }
+  };
+
+  const handleRunWeeklySettlement = async () => {
+    setSettlementRunning(true);
+    setSettlementNotice('');
+    try {
+      const res = await brokerApi.runWeeklySettlement({});
+      setSettlementNotice(res?.message || 'Weekly settlement completed.');
+      await refreshSettlementHistory();
+    } catch (err) {
+      console.error('Failed to run weekly settlement:', err);
+      setSettlementNotice(err?.message || 'Failed to run weekly settlement.');
+    } finally {
+      setSettlementRunning(false);
+    }
   };
 
   const uploadQrToCloudinary = async (file) => {
@@ -344,6 +427,83 @@ const Settings = () => {
           <p className="text-[10px] text-[#617589] px-2">
             Information entered here will be visible to your clients for fund transfers.
           </p>
+        </div>
+
+        {/* Weekly Settlement */}
+        <div className="flex flex-col gap-1.5">
+          <h3 className="text-[#617589] text-[10px] font-semibold uppercase tracking-wider pl-2">Weekly Settlement</h3>
+          <div className="bg-white rounded-xl shadow-sm overflow-hidden divide-y divide-gray-100">
+            <div className="px-3 py-3 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium">Auto Settlement (Monday 00:00 IST)</p>
+                <p className="text-[#617589] text-xs">
+                  {settlementConfig.autoWeeklySettlementEnabled ? 'Enabled' : 'Disabled'}
+                </p>
+              </div>
+              <button
+                onClick={handleToggleAutoSettlement}
+                disabled={settlementSaving || settlementRunning}
+                className={`h-9 px-3 text-xs font-bold rounded-lg disabled:opacity-60 ${
+                  settlementConfig.autoWeeklySettlementEnabled
+                    ? 'bg-emerald-50 border border-emerald-200 text-emerald-700'
+                    : 'bg-[#137fec] text-white'
+                }`}
+              >
+                {settlementSaving
+                  ? 'Saving...'
+                  : settlementConfig.autoWeeklySettlementEnabled
+                    ? 'Disable Auto'
+                    : 'Enable Auto'}
+              </button>
+            </div>
+
+            <div className="px-3 py-3 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium">Manual Weekly Settlement</p>
+                <p className="text-[#617589] text-xs">
+                  Use this when you want to settle before Monday auto run or override the boundary.
+                </p>
+              </div>
+              <button
+                onClick={handleRunWeeklySettlement}
+                disabled={settlementRunning || settlementSaving}
+                className="h-9 px-3 bg-[#137fec] text-white text-xs font-bold rounded-lg disabled:opacity-60"
+              >
+                {settlementRunning ? 'Running...' : 'Run Now'}
+              </button>
+            </div>
+
+            <div className="px-3 py-3">
+              <p className="text-xs font-semibold text-[#617589] uppercase tracking-wider mb-2">Recent Runs</p>
+              {settlementHistory.length === 0 ? (
+                <p className="text-[#617589] text-xs">No settlement runs yet.</p>
+              ) : (
+                <div className="space-y-2">
+                  {settlementHistory.map((row) => (
+                    <div key={row.runRef} className="rounded-lg border border-gray-100 bg-[#f6f7f8] px-2.5 py-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-[11px] font-bold text-[#111418] truncate">{row.runRef}</p>
+                        <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
+                          row.mode === 'auto' ? 'bg-emerald-100 text-emerald-700' : 'bg-[#eaf4ff] text-[#137fec]'
+                        }`}>
+                          {row.mode === 'auto' ? 'AUTO' : 'MANUAL'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-[#617589] mt-0.5">
+                        Settled: {formatSettlementDateTime(row.settledAt)}
+                      </p>
+                      <p className="text-[11px] text-[#617589]">
+                        Clients: {row.customersAffected || 0} | Total: ₹{Number(row.totalAmount || 0).toFixed(2)}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {settlementNotice && (
+                <p className="text-[11px] text-[#137fec] mt-2">{settlementNotice}</p>
+              )}
+            </div>
+          </div>
         </div>
 
         {/* Logout */}

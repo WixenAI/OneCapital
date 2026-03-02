@@ -9,10 +9,12 @@
   font-display: swap;
 }
 
-/* Reveal Material Symbols icons once the font has finished loading.
-   The `fonts-loaded` class is added to <html> by the inline script in index.html.
-   Until then, icons are hidden (visibility:hidden set inline) so users never
-   see raw names like "arrow_forward" or "badge" flashing as plain text. */
+/* Hide Material Symbols icons until the font is ready, then reveal.
+   The `fonts-loaded` class is added by /bootstrap.js in public/. */
+.material-symbols-outlined {
+  visibility: hidden;
+}
+
 html.fonts-loaded .material-symbols-outlined {
   visibility: visible;
 }

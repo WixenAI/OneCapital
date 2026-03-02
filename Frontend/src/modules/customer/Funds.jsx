@@ -20,6 +20,18 @@ const formatCurrency = (value) => {
   return `₹${n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 };
 
+const formatIstDateOnly = (value) => {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleDateString('en-IN', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'Asia/Kolkata',
+  });
+};
+
 const getIstNow = () => new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
 
 const isSaturdayIst = () => getIstNow().getDay() === 6;
@@ -30,6 +42,7 @@ const Funds = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [transactions, setTransactions] = useState([]);
+  const [netCashScope, setNetCashScope] = useState('current_week');
 
   const [wallet, setWallet] = useState({
     depositedCash: 0,
@@ -43,7 +56,14 @@ const Funds = () => {
     delivery: { available: 0, used: 0, remaining: 0 },
     optionPremium: { percent: 10, base: 0, limit: 0, used: 0, remaining: 0 },
   });
-  const [summary, setSummary] = useState({ payInLastWeek: 0, payOutToday: 0, realizedPnlToday: 0 });
+  const [summary, setSummary] = useState({
+    payInLastWeek: 0,
+    payOutToday: 0,
+    realizedPnlToday: 0,
+    realizedPnlThisWeek: 0,
+    weekBoundaryStart: null,
+    weekBoundaryType: 'auto_monday',
+  });
 
   const applyFundsState = useCallback((nextState) => {
     setWallet(nextState?.wallet || {
@@ -58,7 +78,14 @@ const Funds = () => {
       delivery: { available: 0, used: 0, remaining: 0 },
       optionPremium: { percent: 10, base: 0, limit: 0, used: 0, remaining: 0 },
     });
-    setSummary(nextState?.summary || { payInLastWeek: 0, payOutToday: 0, realizedPnlToday: 0 });
+    setSummary(nextState?.summary || {
+      payInLastWeek: 0,
+      payOutToday: 0,
+      realizedPnlToday: 0,
+      realizedPnlThisWeek: 0,
+      weekBoundaryStart: null,
+      weekBoundaryType: 'auto_monday',
+    });
     setTransactions(nextState?.transactions || []);
   }, []);
 
@@ -128,6 +155,13 @@ const Funds = () => {
         payInLastWeek: data.summary?.payInLastWeek ?? data.summary?.payInToday ?? 0,
         payOutToday: data.summary?.payOutToday ?? 0,
         realizedPnlToday: data.summary?.realizedPnlToday ?? 0,
+        realizedPnlThisWeek: data.summary?.realizedPnlThisWeek ?? data.summary?.realizedPnlToday ?? 0,
+        weekBoundaryStart: data.summary?.weekBoundaryStart
+          ?? data.settlement?.boundaryStart
+          ?? null,
+        weekBoundaryType: data.summary?.weekBoundaryType
+          ?? data.settlement?.boundaryType
+          ?? 'auto_monday',
       };
 
       const txHistory = historyRes.transactions || historyRes.data || [];
@@ -171,6 +205,11 @@ const Funds = () => {
   const saturdayActive = isSaturdayIst();
   const withdrawableNetCash = Math.max(0, Number(wallet.withdrawableNetCash) || 0);
   const withdrawDisabled = loading || withdrawableNetCash <= 0 || !saturdayActive;
+  const currentWeekNetCash = Number(summary.realizedPnlThisWeek) || 0;
+  const displayedNetCash = netCashScope === 'overall'
+    ? Number(wallet.netCash) || 0
+    : currentWeekNetCash;
+  const netCashToneClass = displayedNetCash >= 0 ? 'text-[#078838]' : 'text-red-500';
 
   return (
     <div className="flex flex-col min-h-screen bg-[#f2f4f6] dark:bg-[#050806] dark:text-[#e8f3ee] pb-24">
@@ -213,19 +252,33 @@ const Funds = () => {
         {/* Net Cash (P&L) */}
         <div className="flex-1 rounded-xl shadow-sm border border-gray-200 dark:border-[#22352d] bg-white dark:bg-[#0b120f] overflow-hidden">
           <div className="p-3.5 sm:p-4">
-            <div className="flex items-center gap-1.5 mb-1">
-              <span className="material-symbols-outlined text-[18px]" style={{ color: !loading && wallet.netCash >= 0 ? '#078838' : '#ef4444' }}>
-                trending_up
-              </span>
-              <p className="text-[#617589] dark:text-[#9cb7aa] text-[11px] sm:text-[13px]">Net Cash</p>
+            <div className="flex items-start justify-between gap-2 mb-1">
+              <div className="flex items-center gap-1.5">
+                <span className="material-symbols-outlined text-[18px]" style={{ color: !loading && displayedNetCash >= 0 ? '#078838' : '#ef4444' }}>
+                  trending_up
+                </span>
+                <p className="text-[#617589] dark:text-[#9cb7aa] text-[11px] sm:text-[13px]">Net Cash</p>
+              </div>
+              <select
+                value={netCashScope}
+                onChange={(e) => setNetCashScope(e.target.value)}
+                className="h-7 rounded-md border border-gray-200 dark:border-[#22352d] bg-white dark:bg-[#111b17] px-1.5 text-[10px] sm:text-[11px] text-[#617589] dark:text-[#9cb7aa] outline-none"
+                aria-label="Select net cash scope"
+              >
+                <option value="current_week">Current Week</option>
+                <option value="overall">Total Overall</option>
+              </select>
             </div>
+            <p className="text-[#617589] dark:text-[#9cb7aa] text-[10px] sm:text-[11px] mb-0.5">
+              {netCashScope === 'overall' ? 'Overall total' : 'Current week'}
+            </p>
             {loading ? (
               <div className="animate-pulse">
                 <div className="h-6 bg-gray-200 rounded w-24 mb-1"></div>
               </div>
             ) : (
-              <p className={`text-[20px] sm:text-[24px] font-bold leading-tight tracking-[-0.02em] ${wallet.netCash >= 0 ? 'text-[#078838]' : 'text-red-500'}`}>
-                {wallet.netCash >= 0 ? '+' : ''}{formatCurrency(wallet.netCash)}
+              <p className={`text-[20px] sm:text-[24px] font-bold leading-tight tracking-[-0.02em] ${netCashToneClass}`}>
+                {displayedNetCash >= 0 ? '+' : ''}{formatCurrency(displayedNetCash)}
               </p>
             )}
           </div>
@@ -310,6 +363,14 @@ const Funds = () => {
       {/* Details Grid */}
       <div className="px-3 sm:px-4 mt-6">
         <h3 className="text-[#111418] dark:text-[#e8f3ee] text-[17px] font-bold mb-3">Details</h3>
+        {summary.weekBoundaryStart && (
+          <p className="text-[#617589] dark:text-[#9cb7aa] text-[11px] mb-2">
+            Active period from{' '}
+            <span className="font-semibold text-[#111418] dark:text-[#e8f3ee]">
+              {formatIstDateOnly(summary.weekBoundaryStart)}
+            </span>
+          </p>
+        )}
         <div className="bg-white dark:bg-[#0b120f] rounded-xl border border-gray-200 dark:border-[#22352d] overflow-hidden shadow-sm">
           {loading ? (
             <div className="p-3 animate-pulse">
@@ -346,9 +407,9 @@ const Funds = () => {
                   <p className="text-[#617589] dark:text-[#9cb7aa] text-[9px] mt-0.5">{trading.optionPremium.percent}% of opening balance</p>
                 </div>
                 <div className="flex-1 p-3">
-                  <p className="text-[#617589] dark:text-[#9cb7aa] text-[11px] mb-1">Realized P&L (Today)</p>
-                  <p className={`text-[13px] font-bold ${summary.realizedPnlToday >= 0 ? 'text-[#078838]' : 'text-red-500'}`}>
-                    {summary.realizedPnlToday >= 0 ? '+' : ''}{formatCurrency(summary.realizedPnlToday)}
+                  <p className="text-[#617589] dark:text-[#9cb7aa] text-[11px] mb-1">Realized P&L (This Week)</p>
+                  <p className={`text-[13px] font-bold ${summary.realizedPnlThisWeek >= 0 ? 'text-[#078838]' : 'text-red-500'}`}>
+                    {summary.realizedPnlThisWeek >= 0 ? '+' : ''}{formatCurrency(summary.realizedPnlThisWeek)}
                   </p>
                 </div>
               </div>

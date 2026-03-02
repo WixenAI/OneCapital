@@ -13,6 +13,7 @@ import withdrawalRoutes from './withdrawalRoutes.js';
 import paymentRoutes from './paymentRoutes.js';
 import settingsRoutes from './settingsRoutes.js';
 import registrationRoutes from './registrationRoutes.js';
+import settlementRoutes from './settlementRoutes.js';
 
 const router = express.Router();
 
@@ -38,6 +39,7 @@ router.use('/', paymentRoutes);
 
 // Settings
 router.use('/', settingsRoutes);
+router.use('/', settlementRoutes);
 
 // Registration Applications
 router.use('/', registrationRoutes);

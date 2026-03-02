@@ -48,6 +48,9 @@ const BrokerSchema = new Schema({
   settings: {
     default_order_type: { type: String, enum: ['MIS', 'NRML', 'CNC'], default: 'MIS' },
     biometric_login: { type: Boolean, default: false },
+    settlement: {
+      auto_weekly_settlement_enabled: { type: Boolean, default: true },
+    },
     notifications: {
       trade_executions: { type: Boolean, default: true },
       margin_alerts: { type: Boolean, default: true },

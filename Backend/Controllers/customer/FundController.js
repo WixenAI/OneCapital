@@ -14,6 +14,7 @@ import {
   matchesFundTransactionCategory,
   sanitizeFundTransactionCategory,
 } from '../../Utils/fundTransactionMapper.js';
+import { resolveCurrentWeeklyBoundary } from '../../Utils/weeklySettlement.js';
 import { writeAuditSuccess } from '../../Utils/AuditLogger.js';
 import { createPaymentRequest } from '../broker/PaymentController.js';
 import { createWithdrawalRequest } from '../broker/WithdrawalController.js';
@@ -226,6 +227,7 @@ const getBrokerPaymentInfoById = async (brokerId) => {
 const getBalance = asyncHandler(async (req, res) => {
   const customerIdStr = req.user.customer_id;
   const brokerIdStr = req.user.stringBrokerId;
+  const emptyBoundary = resolveCurrentWeeklyBoundary({ transactions: [] });
   const pendingWithdrawals = await getPendingWithdrawalsTotal({
     customerMongoId: req.user._id,
     brokerIdStr,
@@ -258,7 +260,24 @@ const getBalance = asyncHandler(async (req, res) => {
         delivery: { available: 0, used: 0, remaining: 0 },
         optionPremium: { percent: 10, base: 0, limit: 0, used: 0, remaining: 0 },
       },
-      summary: { payInLastWeek: 0, payInToday: 0, payOutToday: 0, realizedPnlToday: 0 },
+      summary: {
+        payInLastWeek: 0,
+        payInToday: 0,
+        payOutToday: 0,
+        realizedPnlToday: 0,
+        realizedPnlThisWeek: 0,
+        realizedPnlSinceSettlement: 0,
+        weekBoundaryStart: emptyBoundary.boundaryStartUtc.toISOString(),
+        weekBoundaryType: emptyBoundary.boundaryType,
+      },
+      settlement: {
+        boundaryStart: emptyBoundary.boundaryStartUtc.toISOString(),
+        boundaryType: emptyBoundary.boundaryType,
+        weekStart: emptyBoundary.weekStartUtc.toISOString(),
+        weekEnd: emptyBoundary.weekEndUtc.toISOString(),
+        latestSettlementAt: null,
+        latestSettlementMode: null,
+      },
     });
   }
 
@@ -308,13 +327,21 @@ const getBalance = asyncHandler(async (req, res) => {
     return sum + (approved > 0 ? approved : toNumber(request?.amount));
   }, 0);
 
-  // Calculate realized P&L for today from fund transactions
-  const todayStart = new Date();
-  todayStart.setHours(0, 0, 0, 0);
-  const realizedPnlToday = (fund.transactions || [])
+  const weeklyBoundary = resolveCurrentWeeklyBoundary({
+    transactions: fund.transactions || [],
+    nowUtc: new Date(),
+  });
+  const boundaryStartUtc = weeklyBoundary.boundaryStartUtc;
+
+  // Calculate realized P&L for active week/session using weekly settlement boundary.
+  const realizedPnlThisWeek = (fund.transactions || [])
     .filter((t) => {
       const ts = t.timestamp ? new Date(t.timestamp) : null;
-      return ts && ts >= todayStart && (t.type === 'realized_profit' || t.type === 'realized_loss');
+      return (
+        ts
+        && ts >= boundaryStartUtc
+        && (t.type === 'realized_profit' || t.type === 'realized_loss')
+      );
     })
     .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
 
@@ -370,7 +397,21 @@ const getBalance = asyncHandler(async (req, res) => {
       // Legacy aliases kept temporarily for frontend compatibility.
       payInToday: payInLastWeek,
       payOutToday: 0,
-      realizedPnlToday: Number(realizedPnlToday.toFixed(2)),
+      realizedPnlToday: Number(realizedPnlThisWeek.toFixed(2)),
+      realizedPnlThisWeek: Number(realizedPnlThisWeek.toFixed(2)),
+      realizedPnlSinceSettlement: Number(realizedPnlThisWeek.toFixed(2)),
+      weekBoundaryStart: boundaryStartUtc.toISOString(),
+      weekBoundaryType: weeklyBoundary.boundaryType,
+    },
+    settlement: {
+      boundaryStart: boundaryStartUtc.toISOString(),
+      boundaryType: weeklyBoundary.boundaryType,
+      weekStart: weeklyBoundary.weekStartUtc.toISOString(),
+      weekEnd: weeklyBoundary.weekEndUtc.toISOString(),
+      latestSettlementAt: weeklyBoundary.latestSettlement?.timestamp
+        ? weeklyBoundary.latestSettlement.timestamp.toISOString()
+        : null,
+      latestSettlementMode: weeklyBoundary.latestSettlement?.metadata?.mode || null,
     },
   });
 });
