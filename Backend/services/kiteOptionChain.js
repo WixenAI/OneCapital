@@ -516,9 +516,9 @@ export async function getOptionChain(underlyingName, segment = 'NFO-OPT', expiry
                 tradingsymbol: opt.tradingsymbol,
                 lot_size: opt.lot_size,
                 tick_size: opt.tick_size,
-                ltp: 0, // Will be populated by frontend via WebSocket
-                oi: 0,
-                volume: 0,
+                ltp: null, // Populated by frontend via WebSocket — null = pending
+                oi: null,
+                volume: null,
             };
 
             if (opt.instrument_type === 'CE') {

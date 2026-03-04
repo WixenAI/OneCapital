@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import { getKiteLTP } from '../../services/kiteQuote.js';
 import Order from '../../Model/Trading/OrdersModel.js';
 import { closeOrderAndSettle } from '../../services/closeOrderAndSettle.js';
+import { removeFromWatchlist } from '../../Utils/OrderManager.js';
 
 // ---------------------------------------------------------
 // HELPER: Fetch Live LTP (Using Kite Quote API)
@@ -67,6 +68,10 @@ async function placeMarketOrder(orderId) {
         });
 
         if (result.ok) {
+            await removeFromWatchlist(result.order || {
+                _id: order._id,
+                instrument_token: order.instrument_token || order.security_Id,
+            });
             console.log(`[placeMarketOrder] Order ${order._id} closed at ₹${currentLtp}. P&L: ₹${result.pnl?.netPnl ?? 'N/A'}`);
         }
 

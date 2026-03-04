@@ -14,6 +14,11 @@ import {
   getSpreadForBucket,
   applySpreadToPrice,
 } from '../../Utils/ClientPricingEngine.js';
+import {
+  addToWatchlist,
+  removeFromWatchlist,
+  updateTriggerInWatchlist,
+} from '../../Utils/OrderManager.js';
 import { logFailedOrderAttempt } from '../../Utils/OrderAttemptLogger.js';
 import { getStandardMarketStatus } from '../../Utils/tradingSession.js';
 import { releaseMarginOnClose } from '../../services/marginLifecycle.js';
@@ -307,6 +312,8 @@ const placeOrder = asyncHandler(async (req, res) => {
     });
   }
 
+  await addToWatchlist(order);
+
   console.log(`[Trading] Order placed: ${sideNorm} ${qtyNum} ${symbol} @ Raw ₹${rawEntryPrice}, Effective ₹${effectiveEntryPrice}`);
 
   res.status(201).json({
@@ -465,7 +472,7 @@ const modifyOrder = asyncHandler(async (req, res) => {
   const customerIdStr = req.user.customer_id;
   const brokerIdStr = req.user.stringBrokerId;
   const { id } = req.params;
-  const { price, quantity, triggerPrice } = req.body;
+  const { price, quantity, triggerPrice, stopLoss, target } = req.body;
 
   const order = await OrderModel.findOne({
     _id: id,
@@ -485,6 +492,20 @@ const modifyOrder = asyncHandler(async (req, res) => {
     const marketStatus = getStandardMarketStatus();
     if (!marketStatus.isOpen) {
       return res.status(403).json(marketClosedPayload());
+    }
+  }
+
+  if ((stopLoss !== undefined || target !== undefined) && isLongTermProduct(order.product) && !isBrokerImpersonationBypass(req)) {
+    const currentStopLoss = toNumber(order.stop_loss, 0);
+    const currentTarget = toNumber(order.target, 0);
+    const nextStopLoss = stopLoss !== undefined ? Number(stopLoss) : currentStopLoss;
+    const nextTarget = target !== undefined ? Number(target) : currentTarget;
+
+    if (!Number.isFinite(nextStopLoss) || !Number.isFinite(nextTarget) || nextStopLoss !== currentStopLoss || nextTarget !== currentTarget) {
+      return res.status(400).json({
+        success: false,
+        message: 'SL/Target cannot be set or modified for longterm orders (CNC/NRML).',
+      });
     }
   }
 
@@ -537,6 +558,26 @@ const modifyOrder = asyncHandler(async (req, res) => {
   }
 
   if (triggerPrice !== undefined) order.trigger_price = triggerPrice;
+  if (stopLoss !== undefined) {
+    const normalizedStopLoss = Number(stopLoss);
+    if (!Number.isFinite(normalizedStopLoss) || normalizedStopLoss < 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'stopLoss must be zero or a positive number.',
+      });
+    }
+    order.stop_loss = normalizedStopLoss;
+  }
+  if (target !== undefined) {
+    const normalizedTarget = Number(target);
+    if (!Number.isFinite(normalizedTarget) || normalizedTarget < 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'target must be zero or a positive number.',
+      });
+    }
+    order.target = normalizedTarget;
+  }
   order.modified_at = new Date();
 
   // Adjust margin if needed
@@ -570,6 +611,7 @@ const modifyOrder = asyncHandler(async (req, res) => {
   }
 
   await order.save();
+  await updateTriggerInWatchlist(order);
 
   res.status(200).json({
     success: true,
@@ -635,6 +677,7 @@ const cancelOrder = asyncHandler(async (req, res) => {
   order.margin_blocked = 0;
   order.cancelled_at = new Date();
   await order.save();
+  await removeFromWatchlist(order);
 
   res.status(200).json({
     success: true,

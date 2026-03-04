@@ -6,8 +6,7 @@ const STORAGE_KEY = 'wolf_theme';
 function getInitialTheme() {
   const saved = localStorage.getItem(STORAGE_KEY);
   if (saved === 'dark' || saved === 'light') return saved;
-  // Fallback: system preference
-  if (window.matchMedia('(prefers-color-scheme: dark)').matches) return 'dark';
+  // Global default: light until user explicitly changes it.
   return 'light';
 }
 

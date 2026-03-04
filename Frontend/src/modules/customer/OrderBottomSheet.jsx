@@ -89,7 +89,7 @@ const OrderBottomSheet = ({
 
     let animationFrameId;
     let lastUpdate = 0;
-    const THROTTLE_MS = 90;
+    const THROTTLE_MS = 33.33;
 
     const updateLoop = (timestamp) => {
       if (timestamp - lastUpdate < THROTTLE_MS) {

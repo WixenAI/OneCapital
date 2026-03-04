@@ -13,7 +13,13 @@ import { stockSquareoffScheduler } from './cron/Scheduler/cron-squareoff.js';
 import FundCronJobs from './cron/FundScheduler/fundCorn.js';
 import { isMarketOpen } from './Utils/marketStatus.js';
 import { startAutoLoginCron, checkAndRefreshOnStartup } from './cron/autoLoginCron.js';
-import { loadOpenOrders } from './Utils/OrderManager.js';
+import {
+  ORDER_TRIGGER_COMMAND_CHANNEL,
+  applyTriggerCommand,
+  configureOrderTriggerSync,
+  loadOpenOrders,
+  reconcileOpenOrderTriggers,
+} from './Utils/OrderManager.js';
 
 // ---------------------------------------------------------------------------
 // Process role toggles — set these env vars to 'false' on API-only instances
@@ -53,6 +59,7 @@ if (ENABLE_WS_FEED) {
 // In split mode, API instances cannot call lmf.subscribe() directly.
 // Bridge: wolf-api publishes subscribe commands to Redis → wolf-worker executes them on lmf.
 // This is subscribe-command-only (not per-tick) so there is zero impact on tick latency.
+let triggerCommandPublisher = null;
 if (process.env.REDIS_URL) {
   if (ENABLE_WS_FEED) {
     // Wolf-worker: listen for subscribe commands forwarded by API instances
@@ -66,6 +73,23 @@ if (process.env.REDIS_URL) {
           if (lmf) lmf.subscribe(list, subscriptionType);
         } catch (e) { /* ignore malformed messages */ }
       });
+      await subCmdClient.subscribe('kite:unsubscribe', (message) => {
+        try {
+          const { list } = JSON.parse(message);
+          if (lmf) lmf.unsubscribe(list);
+        } catch (e) { /* ignore malformed messages */ }
+      });
+      if (ENABLE_ORDER_TRIGGER_ENGINE) {
+        await subCmdClient.subscribe(ORDER_TRIGGER_COMMAND_CHANNEL, async (message) => {
+          try {
+            const command = JSON.parse(message);
+            await applyTriggerCommand(command);
+          } catch (e) {
+            console.error('[TriggerSync] Failed to apply command:', e?.message || e);
+          }
+        });
+        console.log('[Startup] ✅ Trigger sync channel active (worker)');
+      }
       console.log('[Startup] ✅ Subscription bridge active (worker — listening for commands)');
     } catch (err) {
       console.error('[Startup] Subscription bridge setup failed:', err.message);
@@ -77,12 +101,18 @@ if (process.env.REDIS_URL) {
       pubCmdClient.on('error', err => console.error('[SubBridge] Redis error:', err.message));
       await pubCmdClient.connect();
       setSubCommandPublisher(pubCmdClient);
+      triggerCommandPublisher = pubCmdClient;
       console.log('[Startup] ✅ Subscription bridge active (api — publishing commands)');
     } catch (err) {
       console.error('[Startup] Subscription bridge setup failed:', err.message);
     }
   }
 }
+
+configureOrderTriggerSync({
+  engineEnabled: ENABLE_ORDER_TRIGGER_ENGINE,
+  publisher: triggerCommandPublisher,
+});
 
 const MONGODB_URI = process.env.MONGODB_URI || process.env.MONGO_URL;
 
@@ -92,6 +122,15 @@ console.log("✅ Mongo connected");
 // --- Order trigger engine ---
 if (ENABLE_ORDER_TRIGGER_ENGINE) {
   await loadOpenOrders();
+  const reconcileMsRaw = Number.parseInt(process.env.ORDER_TRIGGER_RECONCILE_MS || '30000', 10);
+  const reconcileMs = Number.isFinite(reconcileMsRaw) && reconcileMsRaw >= 5000 ? reconcileMsRaw : 30000;
+  const reconcileTimer = setInterval(() => {
+    reconcileOpenOrderTriggers().catch((error) => {
+      console.error('[OrderManager] Reconciliation failed:', error?.message || error);
+    });
+  }, reconcileMs);
+  if (typeof reconcileTimer.unref === 'function') reconcileTimer.unref();
+  console.log(`[Startup] Order trigger reconciliation scheduled every ${reconcileMs}ms`);
 } else {
   console.log('[Startup] Order trigger engine disabled (ENABLE_ORDER_TRIGGER_ENGINE=false)');
 }

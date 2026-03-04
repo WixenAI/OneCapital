@@ -50,10 +50,58 @@ const getInstrumentIdentityKey = (item) => {
   return null;
 };
 
+const DEFAULT_WATCHLIST_TRACE_LIMIT = 120;
+
+const readWatchlistTraceEnabled = () => {
+  if (import.meta.env.VITE_WATCHLIST_RENDER_TRACE === 'false') return false;
+  if (import.meta.env.VITE_WATCHLIST_RENDER_TRACE === 'true') return true;
+  if (typeof window === 'undefined') return true;
+  try {
+    const override = window.localStorage.getItem('WATCHLIST_RENDER_TRACE');
+    if (override === 'false') return false;
+    if (override === 'true') return true;
+  } catch {
+    // Ignore localStorage read errors.
+  }
+  return true;
+};
+
+const readWatchlistTraceLimit = () => {
+  const envRaw = Number.parseInt(import.meta.env.VITE_WATCHLIST_RENDER_TRACE_LIMIT || '', 10);
+  if (Number.isFinite(envRaw) && envRaw > 0) return envRaw;
+  if (typeof window === 'undefined') return DEFAULT_WATCHLIST_TRACE_LIMIT;
+  try {
+    const localRaw = Number.parseInt(window.localStorage.getItem('WATCHLIST_RENDER_TRACE_LIMIT') || '', 10);
+    if (Number.isFinite(localRaw) && localRaw > 0) return localRaw;
+  } catch {
+    // Ignore localStorage read errors.
+  }
+  return DEFAULT_WATCHLIST_TRACE_LIMIT;
+};
+
+const readWatchlistTraceTokenFilter = () => {
+  const envValue = String(import.meta.env.VITE_WATCHLIST_RENDER_TRACE_TOKENS || '').trim();
+  let raw = envValue;
+  if (!raw && typeof window !== 'undefined') {
+    try {
+      raw = String(window.localStorage.getItem('WATCHLIST_RENDER_TRACE_TOKENS') || '').trim();
+    } catch {
+      raw = '';
+    }
+  }
+  if (!raw) return null;
+  const tokens = raw
+    .split(',')
+    .map((item) => String(item || '').trim())
+    .filter(Boolean);
+  if (!tokens.length) return null;
+  return new Set(tokens);
+};
+
 const Watchlist = () => {
   const CACHE_TTL_MS = 2 * 60 * 1000;
   const WATCHLIST_REVALIDATE_AFTER_MS = 10 * 1000;
-  const PRICE_THROTTLE_MS = 100;
+  const PRICE_THROTTLE_MS = 33.33;
   const SEARCH_DEBOUNCE_MS = 300;
   const SEARCH_SUBSCRIBE_DEBOUNCE_MS = 400;
 
@@ -107,6 +155,12 @@ const Watchlist = () => {
   const searchSubscriptionsRef = useRef([]);
   const activeAbortControllerRef = useRef(null);
   const searchResultsRef = useRef(searchResults);
+  const watchlistTraceEnabledRef = useRef(readWatchlistTraceEnabled());
+  const watchlistTraceLimitRef = useRef(readWatchlistTraceLimit());
+  const watchlistTraceTokensRef = useRef(readWatchlistTraceTokenFilter());
+  const watchlistTraceCountRef = useRef(0);
+  const watchlistLastSeqByTokenRef = useRef(new Map());
+  const watchlistPendingRenderRef = useRef(null);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -132,6 +186,27 @@ const Watchlist = () => {
   useEffect(() => {
     searchResultsRef.current = searchResults;
   }, [searchResults]);
+
+  useEffect(() => {
+    watchlistTraceEnabledRef.current = readWatchlistTraceEnabled();
+    watchlistTraceLimitRef.current = readWatchlistTraceLimit();
+    watchlistTraceTokensRef.current = readWatchlistTraceTokenFilter();
+    watchlistTraceCountRef.current = 0;
+    watchlistLastSeqByTokenRef.current.clear();
+
+    if (!watchlistTraceEnabledRef.current) return;
+    const tokenFilter = watchlistTraceTokensRef.current;
+    const filterLabel = tokenFilter ? Array.from(tokenFilter).join(',') : 'ALL';
+    console.log(
+      `[WatchlistTrace] active. limit=${watchlistTraceLimitRef.current}, tokenFilter=${filterLabel}`
+    );
+  }, []);
+
+  const shouldTraceToken = useCallback((tokenKey) => {
+    const filter = watchlistTraceTokensRef.current;
+    if (!filter) return true;
+    return filter.has(String(tokenKey));
+  }, []);
 
   const normalizeQuote = useCallback((quote) => {
     if (!quote) return { ltp: null, change: 0, changePercent: 0 };
@@ -725,7 +800,7 @@ const Watchlist = () => {
   useEffect(() => {
     let animationFrameId;
     let lastUpdate = 0;
-    const THROTTLE_MS = 200;
+    const THROTTLE_MS = 33.33;
 
     const updateLoop = (timestamp) => {
       if (timestamp - lastUpdate < THROTTLE_MS) {
@@ -897,6 +972,81 @@ const Watchlist = () => {
 
       if (hasUpdates) {
         if (!areMapsEqual(pricesRef.current, byId, isSameQuote)) {
+          const prevPrices = pricesRef.current;
+          const changedKeys = Object.keys(byId).filter((key) => !isSameQuote(prevPrices[key], byId[key]));
+          const rafBuiltTs = Date.now();
+
+          if (
+            watchlistTraceEnabledRef.current &&
+            watchlistTraceCountRef.current < watchlistTraceLimitRef.current &&
+            changedKeys.length > 0
+          ) {
+            const traceEntries = [];
+            for (const key of changedKeys) {
+              if (watchlistTraceCountRef.current + traceEntries.length >= watchlistTraceLimitRef.current) {
+                break;
+              }
+              if (!shouldTraceToken(key)) continue;
+
+              const tick = ticksMap?.get(key);
+              if (!tick) continue;
+              const trace = tick.__trace || {};
+
+              const seqRaw = Number(trace.seq);
+              const serverReceiveTsRaw = Number(trace.serverReceiveTs);
+              const serverEmitTsRaw = Number(trace.serverEmitTs);
+              const exchangeTsRaw = Number(trace.exchangeTsMs);
+              const lastTradeTsRaw = Number(trace.lastTradeTsMs);
+              const sourceToServerRaw = Number(trace.sourceToServerMs);
+              const roomSizeAtEmitRaw = Number(trace.roomSizeAtEmit);
+              const clientReceiveTsRaw = Number(tickUpdatedAtRef.current?.get(key) || 0);
+
+              const seq = Number.isFinite(seqRaw) ? seqRaw : null;
+              const serverReceiveTs = Number.isFinite(serverReceiveTsRaw) ? serverReceiveTsRaw : null;
+              const serverEmitTs = Number.isFinite(serverEmitTsRaw) ? serverEmitTsRaw : null;
+              const exchangeTsMs = Number.isFinite(exchangeTsRaw) ? exchangeTsRaw : null;
+              const lastTradeTsMs = Number.isFinite(lastTradeTsRaw) ? lastTradeTsRaw : null;
+              const sourceToServerMs = Number.isFinite(sourceToServerRaw) ? sourceToServerRaw : null;
+              const roomSizeAtEmit = Number.isFinite(roomSizeAtEmitRaw) ? roomSizeAtEmitRaw : null;
+              const clientReceiveTs = Number.isFinite(clientReceiveTsRaw) && clientReceiveTsRaw > 0
+                ? clientReceiveTsRaw
+                : null;
+
+              let seqGap = null;
+              if (seq != null) {
+                const prevSeq = watchlistLastSeqByTokenRef.current.get(key);
+                seqGap = prevSeq != null ? seq - prevSeq : 0;
+                watchlistLastSeqByTokenRef.current.set(key, seq);
+              }
+
+              traceEntries.push({
+                token: key,
+                ltp: byId[key]?.ltp ?? null,
+                change: byId[key]?.change ?? null,
+                changePercent: byId[key]?.changePercent ?? null,
+                seq,
+                seqGap,
+                serverReceiveTs,
+                serverEmitTs,
+                exchangeTsMs,
+                lastTradeTsMs,
+                sourceToServerMs,
+                roomSizeAtEmit,
+                clientReceiveTs,
+                wireMs: serverEmitTs != null && clientReceiveTs != null ? clientReceiveTs - serverEmitTs : null,
+                receiveToRafMs: clientReceiveTs != null ? rafBuiltTs - clientReceiveTs : null,
+                sourceToRafMs: exchangeTsMs != null ? rafBuiltTs - exchangeTsMs : null,
+                totalToRafMs: serverReceiveTs != null ? rafBuiltTs - serverReceiveTs : null,
+                visibilityAtRaf: typeof document !== 'undefined' ? document.visibilityState : 'na',
+              });
+            }
+            watchlistPendingRenderRef.current = traceEntries.length > 0
+              ? { rafBuiltTs, entries: traceEntries }
+              : null;
+          } else {
+            watchlistPendingRenderRef.current = null;
+          }
+
           pricesRef.current = byId;
           setPrices(byId);
         }
@@ -908,7 +1058,37 @@ const Watchlist = () => {
 
     animationFrameId = requestAnimationFrame(updateLoop);
     return () => cancelAnimationFrame(animationFrameId);
-  }, [PRICE_THROTTLE_MS, normalizeQuote, ticksRef]);
+  }, [PRICE_THROTTLE_MS, normalizeQuote, shouldTraceToken, tickUpdatedAtRef, ticksRef]);
+
+  useEffect(() => {
+    if (!watchlistTraceEnabledRef.current) return;
+    const pending = watchlistPendingRenderRef.current;
+    if (!pending || !Array.isArray(pending.entries) || pending.entries.length === 0) return;
+
+    const renderCommitTs = Date.now();
+    for (const entry of pending.entries) {
+      if (watchlistTraceCountRef.current >= watchlistTraceLimitRef.current) break;
+      const receiveToRenderMs = entry.clientReceiveTs != null ? renderCommitTs - entry.clientReceiveTs : null;
+      const totalToRenderMs = entry.serverReceiveTs != null ? renderCommitTs - entry.serverReceiveTs : null;
+      const rafToRenderMs = renderCommitTs - pending.rafBuiltTs;
+      const sourceToRenderMs = entry.exchangeTsMs != null ? renderCommitTs - entry.exchangeTsMs : null;
+      const renderTracePayload = {
+        idx: watchlistTraceCountRef.current + 1,
+        ...entry,
+        rafBuiltTs: pending.rafBuiltTs,
+        renderCommitTs,
+        rafToRenderMs,
+        receiveToRenderMs,
+        sourceToRenderMs,
+        totalToRenderMs,
+        visibilityAtRender: typeof document !== 'undefined' ? document.visibilityState : 'na',
+      };
+      console.log(`[WatchlistTraceJSON] ${JSON.stringify(renderTracePayload)}`);
+      watchlistTraceCountRef.current += 1;
+    }
+
+    watchlistPendingRenderRef.current = null;
+  }, [prices]);
 
   const indexCards = useMemo(() => {
     return indexInstruments.map((item) => {

@@ -1,182 +1,412 @@
 import Order from '../Model/Trading/OrdersModel.js';
 import { closeOrderAndSettle } from '../services/closeOrderAndSettle.js';
+import { retainSystemTokens, releaseSystemTokens } from '../sockets/io.js';
 
-// =========================================================
-// 1. GLOBAL MEMORY (RAM) - THE WATCHLIST
-// Key   = SecurityID/instrument_token (String)
-// Value = Array of Order Objects
-// =========================================================
+export const ORDER_TRIGGER_COMMAND_CHANNEL = 'order:trigger:commands';
+
+const TERMINAL_STATUSES = new Set(['CLOSED', 'CANCELLED', 'REJECTED', 'EXPIRED']);
+
+// token -> Map<orderId, triggerData>
 export const activeTriggers = new Map();
+// orderId -> token
+const orderTokenIndex = new Map();
 
-/**
- * =========================================================
- * 2. INITIALIZATION (SERVER STARTUP)
- * Load all non-CLOSED orders with SL or Target into RAM.
- * =========================================================
- */
-export const loadOpenOrders = async () => {
-    try {
-        console.log("🔄 [OrderManager] Loading active triggers...");
+let triggerEngineEnabled = process.env.ENABLE_ORDER_TRIGGER_ENGINE !== 'false';
+let commandPublisher = null;
 
-        const activeOrders = await Order.find({
-            status: { $ne: 'CLOSED' },
-            $or: [
-                { stop_loss: { $exists: true, $ne: null, $gt: 0 } },
-                { target: { $exists: true, $ne: null, $gt: 0 } }
-            ]
-        });
-
-        activeTriggers.clear();
-
-        activeOrders.forEach(order => {
-            addToWatchlist(order);
-        });
-
-        console.log(`✅ [OrderManager] System Ready. Tracking ${activeOrders.length} active orders.`);
-    } catch (error) {
-        console.error("❌ [OrderManager] Failed to load orders:", error);
-    }
+const toNumber = (value, fallback = 0) => {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
 };
 
-/**
- * =========================================================
- * 3. ADD ORDER TO MEMORY
- * =========================================================
- */
-export const addToWatchlist = (order) => {
-    const orderStatus = order.status || order.order_status;
-    if (orderStatus === 'CLOSED') return;
+const normalizeToken = (value) => {
+  const raw = value?.instrument_token ?? value?.instrumentToken ?? value?.security_Id ?? value;
+  const token = Number.parseInt(raw, 10);
+  if (!Number.isFinite(token) || token <= 0) return null;
+  return String(token);
+};
 
-    const token = String(order.instrument_token || order.security_Id);
-    const sl = Number(order.stop_loss) || 0;
-    const target = Number(order.target) || 0;
+const normalizeOrderId = (value) => {
+  if (value === null || value === undefined) return null;
+  const id = String(value).trim();
+  return id || null;
+};
 
-    if (sl === 0 && target === 0) return;
+const normalizeStatus = (value) => String(value || '').trim().toUpperCase();
 
-    if (!activeTriggers.has(token)) {
-        activeTriggers.set(token, []);
+const isTerminalStatus = (status) => TERMINAL_STATUSES.has(normalizeStatus(status));
+
+const hasRiskConfigured = ({ stop_loss, stopLoss, sl, target }) => {
+  const stopLossValue = toNumber(stop_loss ?? stopLoss ?? sl, 0);
+  const targetValue = toNumber(target, 0);
+  return stopLossValue > 0 || targetValue > 0;
+};
+
+const shouldTrackOrder = (orderLike) => {
+  if (!orderLike) return false;
+  const status = orderLike.status ?? orderLike.order_status;
+  if (isTerminalStatus(status)) return false;
+  return hasRiskConfigured(orderLike);
+};
+
+const toTriggerData = (orderLike) => {
+  const orderId = normalizeOrderId(orderLike?.orderId ?? orderLike?._id ?? orderLike?.id);
+  const token = normalizeToken(orderLike?.instrument_token ?? orderLike?.security_Id ?? orderLike?.token);
+  if (!orderId || !token) return null;
+
+  return {
+    orderId,
+    token,
+    side: String(orderLike.side || '').toUpperCase() === 'SELL' ? 'SELL' : 'BUY',
+    sl: toNumber(orderLike.stop_loss ?? orderLike.stopLoss ?? orderLike.sl, 0),
+    target: toNumber(orderLike.target, 0),
+    status: normalizeStatus(orderLike.status ?? orderLike.order_status),
+  };
+};
+
+const getTokenBucket = (token, createIfMissing = false) => {
+  if (!activeTriggers.has(token) && createIfMissing) {
+    activeTriggers.set(token, new Map());
+  }
+  return activeTriggers.get(token) || null;
+};
+
+const retainTokenLocal = (token) => {
+  retainSystemTokens([{ instrument_token: token }], 'quote');
+};
+
+const releaseTokenLocal = (token) => {
+  releaseSystemTokens([{ instrument_token: token }]);
+};
+
+const removeByOrderIdLocal = (orderId, tokenHint = null) => {
+  const normalizedOrderId = normalizeOrderId(orderId);
+  if (!normalizedOrderId) return { removed: false };
+
+  const indexedToken = orderTokenIndex.get(normalizedOrderId) || null;
+  const candidateTokens = [];
+
+  if (tokenHint) {
+    const normalizedHint = normalizeToken(tokenHint);
+    if (normalizedHint) candidateTokens.push(normalizedHint);
+  }
+
+  if (indexedToken && !candidateTokens.includes(indexedToken)) {
+    candidateTokens.push(indexedToken);
+  }
+
+  let removed = false;
+
+  for (const token of candidateTokens) {
+    const bucket = getTokenBucket(token);
+    if (!bucket || !bucket.has(normalizedOrderId)) continue;
+
+    bucket.delete(normalizedOrderId);
+    removed = true;
+
+    if (bucket.size === 0) {
+      activeTriggers.delete(token);
+      releaseTokenLocal(token);
+    }
+  }
+
+  if (!removed && indexedToken && activeTriggers.has(indexedToken)) {
+    const bucket = getTokenBucket(indexedToken);
+    if (bucket?.has(normalizedOrderId)) {
+      bucket.delete(normalizedOrderId);
+      removed = true;
+      if (bucket.size === 0) {
+        activeTriggers.delete(indexedToken);
+        releaseTokenLocal(indexedToken);
+      }
+    }
+  }
+
+  if (removed || indexedToken) {
+    orderTokenIndex.delete(normalizedOrderId);
+  }
+
+  return { removed };
+};
+
+const upsertLocal = (orderLike) => {
+  const trigger = toTriggerData(orderLike);
+  if (!trigger) return { tracked: false, reason: 'invalid_trigger_payload' };
+
+  if (!shouldTrackOrder({ ...orderLike, ...trigger })) {
+    removeByOrderIdLocal(trigger.orderId, trigger.token);
+    return { tracked: false, reason: 'not_trackable' };
+  }
+
+  const previousToken = orderTokenIndex.get(trigger.orderId) || null;
+  if (previousToken && previousToken !== trigger.token) {
+    removeByOrderIdLocal(trigger.orderId, previousToken);
+  }
+
+  let bucket = getTokenBucket(trigger.token);
+  if (!bucket) {
+    bucket = getTokenBucket(trigger.token, true);
+    retainTokenLocal(trigger.token);
+  }
+
+  bucket.set(trigger.orderId, trigger);
+  orderTokenIndex.set(trigger.orderId, trigger.token);
+
+  return { tracked: true, trigger };
+};
+
+const publishCommand = async (command) => {
+  if (!commandPublisher) {
+    console.warn('[OrderManager] Trigger engine disabled and no publisher configured. Command skipped:', command?.type);
+    return;
+  }
+
+  try {
+    await commandPublisher.publish(ORDER_TRIGGER_COMMAND_CHANNEL, JSON.stringify(command));
+  } catch (error) {
+    console.error('[OrderManager] Failed to publish trigger command:', error?.message || error);
+  }
+};
+
+const dispatchCommand = async (command) => {
+  if (triggerEngineEnabled) {
+    return applyTriggerCommand(command);
+  }
+  return publishCommand(command);
+};
+
+export const configureOrderTriggerSync = ({ engineEnabled, publisher } = {}) => {
+  if (typeof engineEnabled === 'boolean') {
+    triggerEngineEnabled = engineEnabled;
+  }
+  if (publisher !== undefined) {
+    commandPublisher = publisher || null;
+  }
+};
+
+export const getTriggerEngineState = () => ({
+  enabled: triggerEngineEnabled,
+  trackedTokens: activeTriggers.size,
+  trackedOrders: orderTokenIndex.size,
+  hasPublisher: Boolean(commandPublisher),
+});
+
+export const applyTriggerCommand = async (command = {}) => {
+  const type = String(command?.type || '').toUpperCase();
+
+  switch (type) {
+    case 'UPSERT_TRIGGER': {
+      const order = command?.order || null;
+      if (!order) return;
+      upsertLocal(order);
+      return;
     }
 
-    const triggerData = {
-        orderId: String(order._id),
-        side: order.side,
-        sl: sl,
-        target: target,
-        status: orderStatus
+    case 'REMOVE_TRIGGER': {
+      const order = command?.order || null;
+      const orderId = normalizeOrderId(command?.orderId ?? order?._id ?? order?.id);
+      if (!orderId) return;
+      removeByOrderIdLocal(orderId, command?.token ?? order?.instrument_token ?? order?.security_Id);
+      return;
+    }
+
+    case 'RELOAD_TRIGGERS':
+      await loadOpenOrders();
+      return;
+
+    default:
+      console.warn('[OrderManager] Unknown trigger command type:', command?.type);
+  }
+};
+
+export const addToWatchlist = async (order) => {
+  if (!order) return;
+  await dispatchCommand({
+    type: 'UPSERT_TRIGGER',
+    order: {
+      _id: order._id,
+      instrument_token: order.instrument_token || order.security_Id,
+      side: order.side,
+      stop_loss: order.stop_loss,
+      target: order.target,
+      status: order.status || order.order_status,
+      order_status: order.order_status,
+    },
+  });
+};
+
+export const updateTriggerInWatchlist = async (order) => {
+  if (!order) return;
+  const status = normalizeStatus(order.status || order.order_status);
+  const hasRisk = hasRiskConfigured(order);
+
+  if (isTerminalStatus(status) || !hasRisk) {
+    await removeFromWatchlist(order);
+    return;
+  }
+
+  await addToWatchlist(order);
+};
+
+export const removeFromWatchlist = async (orderOrRef) => {
+  if (!orderOrRef) return;
+
+  const orderId = normalizeOrderId(orderOrRef.orderId ?? orderOrRef._id ?? orderOrRef.id);
+  const token = normalizeToken(orderOrRef.instrument_token ?? orderOrRef.security_Id ?? orderOrRef.token);
+  if (!orderId) return;
+
+  await dispatchCommand({
+    type: 'REMOVE_TRIGGER',
+    orderId,
+    token,
+    order: {
+      _id: orderId,
+      instrument_token: token,
+    },
+  });
+};
+
+export const loadOpenOrders = async () => {
+  try {
+    console.log('🔄 [OrderManager] Loading active triggers...');
+
+    const activeOrders = await Order.find({
+      status: { $nin: Array.from(TERMINAL_STATUSES) },
+      $or: [
+        { stop_loss: { $exists: true, $ne: null, $gt: 0 } },
+        { target: { $exists: true, $ne: null, $gt: 0 } },
+      ],
+    }).select('_id instrument_token security_Id side stop_loss target status order_status').lean();
+
+    const nextActiveTriggers = new Map();
+    const nextOrderTokenIndex = new Map();
+
+    for (const order of activeOrders) {
+      const trigger = toTriggerData(order);
+      if (!trigger) continue;
+      if (!shouldTrackOrder({ ...order, ...trigger })) continue;
+
+      let bucket = nextActiveTriggers.get(trigger.token);
+      if (!bucket) {
+        bucket = new Map();
+        nextActiveTriggers.set(trigger.token, bucket);
+      }
+
+      bucket.set(trigger.orderId, trigger);
+      nextOrderTokenIndex.set(trigger.orderId, trigger.token);
+    }
+
+    const previousTokens = new Set(activeTriggers.keys());
+    const currentTokens = new Set(nextActiveTriggers.keys());
+
+    activeTriggers.clear();
+    orderTokenIndex.clear();
+    for (const [token, bucket] of nextActiveTriggers.entries()) {
+      activeTriggers.set(token, bucket);
+    }
+    for (const [orderId, token] of nextOrderTokenIndex.entries()) {
+      orderTokenIndex.set(orderId, token);
+    }
+
+    for (const token of previousTokens) {
+      if (!currentTokens.has(token)) {
+        releaseTokenLocal(token);
+      }
+    }
+    for (const token of currentTokens) {
+      if (!previousTokens.has(token)) {
+        retainTokenLocal(token);
+      }
+    }
+
+    console.log(`✅ [OrderManager] System ready. Tracking ${orderTokenIndex.size} order trigger(s) across ${activeTriggers.size} token(s).`);
+  } catch (error) {
+    console.error('❌ [OrderManager] Failed to load orders:', error);
+  }
+};
+
+export const reconcileOpenOrderTriggers = async () => {
+  const before = {
+    tokens: activeTriggers.size,
+    orders: orderTokenIndex.size,
+  };
+
+  await loadOpenOrders();
+
+  const after = {
+    tokens: activeTriggers.size,
+    orders: orderTokenIndex.size,
+  };
+
+  if (before.tokens !== after.tokens || before.orders !== after.orders) {
+    console.log(
+      `[OrderManager] Reconciled triggers: tokens ${before.tokens}->${after.tokens}, orders ${before.orders}->${after.orders}`
+    );
+  }
+};
+
+const evaluateTriggerHit = ({ side, sl, target }, ltp) => {
+  if (side === 'BUY') {
+    if (sl > 0 && ltp <= sl) return 'STOPLOSS_HIT';
+    if (target > 0 && ltp >= target) return 'TARGET_HIT';
+    return null;
+  }
+
+  if (sl > 0 && ltp >= sl) return 'STOPLOSS_HIT';
+  if (target > 0 && ltp <= target) return 'TARGET_HIT';
+  return null;
+};
+
+const executeExit = async (trigger, currentLtp, reason) => {
+  const { orderId, token } = trigger;
+
+  console.log(`⚡ [OrderManager] Trigger hit. Order=${orderId}, token=${token}, reason=${reason}, ltp=${currentLtp}`);
+
+  removeByOrderIdLocal(orderId, token);
+
+  try {
+    const exitReasonMap = {
+      STOPLOSS_HIT: 'stop_loss',
+      TARGET_HIT: 'target',
     };
 
-    activeTriggers.get(token).push(triggerData);
-};
+    const result = await closeOrderAndSettle(orderId, {
+      exitPrice: currentLtp,
+      exitReason: exitReasonMap[reason] || 'manual',
+      cameFrom: 'Open',
+    });
 
-/**
- * =========================================================
- * 4. UPDATE ORDER IN MEMORY
- * =========================================================
- */
-export const updateTriggerInWatchlist = (order) => {
-    const token = String(order.instrument_token || order.security_Id);
-    const orderIdStr = String(order._id);
-
-    if (activeTriggers.has(token)) {
-        const currentList = activeTriggers.get(token);
-        const filteredList = currentList.filter(o => o.orderId !== orderIdStr);
-
-        if (filteredList.length === 0) {
-            activeTriggers.delete(token);
-        } else {
-            activeTriggers.set(token, filteredList);
-        }
+    if (result.ok) {
+      console.log(`✅ [OrderManager] Order ${orderId} closed & settled. P&L: ₹${result.pnl?.netPnl ?? 'N/A'}`);
+      return;
     }
 
-    const orderStatus = order.status || order.order_status;
-    if (orderStatus !== 'CLOSED') {
-        addToWatchlist(order);
+    if (result.error === 'already_closed_or_not_found') {
+      return;
     }
-};
 
-/**
- * =========================================================
- * 5. EXECUTE EXIT (via closeOrderAndSettle)
- * When SL or Target is hit — close order AND settle funds.
- * =========================================================
- */
-const executeExit = async (orderData, exitPrice, reason) => {
-    const { orderId, token } = orderData;
-
-    console.log(`⚡ [OrderManager] Trigger Hit! Order: ${orderId}, Reason: ${reason}, Price: ${exitPrice}`);
-
-    try {
-        // A. Remove from Memory IMMEDIATELY (prevent double execution)
-        if (activeTriggers.has(token)) {
-            const updatedList = activeTriggers.get(token).filter(o => o.orderId !== orderId);
-            if (updatedList.length === 0) {
-                activeTriggers.delete(token);
-            } else {
-                activeTriggers.set(token, updatedList);
-            }
-        }
-
-        // B. Use unified close + settle service
-        const exitReasonMap = {
-            'STOPLOSS_HIT': 'stop_loss',
-            'TARGET_HIT': 'target',
-        };
-
-        const result = await closeOrderAndSettle(orderId, {
-            exitPrice,
-            exitReason: exitReasonMap[reason] || reason,
-            cameFrom: 'Open',
-        });
-
-        if (result.ok) {
-            console.log(`✅ [OrderManager] Order ${orderId} closed & settled. P&L: ₹${result.pnl?.netPnl ?? 'N/A'}`);
-        } else {
-            console.error(`❌ [OrderManager] Failed to close ${orderId}: ${result.error}`);
-        }
-    } catch (error) {
-        console.error(`❌ [OrderManager] Execution Error for Order ${orderId}:`, error);
-    }
+    console.error(`❌ [OrderManager] Failed to close ${orderId}: ${result.error}`);
+    upsertLocal(trigger);
+  } catch (error) {
+    console.error(`❌ [OrderManager] Execution error for ${orderId}:`, error);
+    upsertLocal(trigger);
+  }
 };
 
 export const onMarketTick = async ({ token, ltp }) => {
-    if (!activeTriggers.has(String(token))) return;
+  const normalizedToken = normalizeToken(token);
+  if (!normalizedToken) return;
 
-    const orders = activeTriggers.get(String(token));
-    const currentLtp = Number(ltp);
+  const bucket = getTokenBucket(normalizedToken);
+  if (!bucket || bucket.size === 0) return;
 
-    if (!currentLtp || currentLtp <= 0) return;
+  const currentLtp = toNumber(ltp, 0);
+  if (currentLtp <= 0) return;
 
-    for (let i = 0; i < orders.length; i++) {
-        const order = orders[i];
-
-        let hit = false;
-        let hitReason = "";
-        let hitPrice = 0;
-
-        if (order.side === 'BUY') {
-            if (order.sl > 0 && currentLtp <= order.sl) {
-                hit = true;
-                hitReason = "STOPLOSS_HIT";
-                hitPrice = order.sl;
-            } else if (order.target > 0 && currentLtp >= order.target) {
-                hit = true;
-                hitReason = "TARGET_HIT";
-                hitPrice = order.target;
-            }
-        } else {
-            if (order.sl > 0 && currentLtp >= order.sl) {
-                hit = true;
-                hitReason = "STOPLOSS_HIT";
-                hitPrice = order.sl;
-            } else if (order.target > 0 && currentLtp <= order.target) {
-                hit = true;
-                hitReason = "TARGET_HIT";
-                hitPrice = order.target;
-            }
-        }
-
-        if (hit) {
-            await executeExit({ ...order, token: String(token) }, hitPrice, hitReason);
-        }
-    }
+  const triggers = Array.from(bucket.values());
+  for (const trigger of triggers) {
+    const reason = evaluateTriggerHit(trigger, currentLtp);
+    if (!reason) continue;
+    await executeExit(trigger, currentLtp, reason);
+  }
 };

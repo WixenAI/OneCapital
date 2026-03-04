@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import api from '../api';
 import { useMarketData } from '../context/SocketContext';
 
+const SUBSCRIBED_STRIKE_COUNT = 13;
+
 const getTickLtp = (tick) => {
   if (!tick) return null;
   return (
@@ -23,6 +25,106 @@ const getTickVolume = (tick) => {
   return tick.volume ?? tick.volume_traded ?? tick.volumeTraded ?? null;
 };
 
+const normalizeSnapshot = (raw) => {
+  if (!raw || typeof raw !== 'object') return null;
+  return {
+    ltp: getTickLtp(raw),
+    oi: getTickOi(raw),
+    volume: getTickVolume(raw),
+  };
+};
+
+const toFiniteNumber = (value) => {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+};
+
+const getAtmIndex = (chainArray, referencePrice) => {
+  if (!Array.isArray(chainArray) || chainArray.length === 0) return -1;
+  const numericPrice = toFiniteNumber(referencePrice);
+  if (numericPrice == null) return Math.floor(chainArray.length / 2);
+
+  let closestIndex = 0;
+  let minDiff = Number.POSITIVE_INFINITY;
+  chainArray.forEach((row, index) => {
+    const strike = toFiniteNumber(row?.strike);
+    if (strike == null) return;
+    const diff = Math.abs(strike - numericPrice);
+    if (diff < minDiff) {
+      minDiff = diff;
+      closestIndex = index;
+    }
+  });
+
+  return closestIndex;
+};
+
+const getWindowBounds = (total, centerIndex, windowSize = SUBSCRIBED_STRIKE_COUNT) => {
+  if (!Number.isFinite(total) || total <= 0) return { start: 0, end: 0 };
+  const safeWindow = Math.max(1, Math.min(windowSize, total));
+  const safeCenter = Math.max(0, Math.min(total - 1, centerIndex));
+  const half = Math.floor(safeWindow / 2);
+
+  let start = Math.max(0, safeCenter - half);
+  let end = Math.min(total, start + safeWindow);
+
+  if (end - start < safeWindow) {
+    start = Math.max(0, end - safeWindow);
+  }
+
+  return { start, end };
+};
+
+const buildWindowSubscription = (chainArray, spotInfo, referencePrice) => {
+  if (!Array.isArray(chainArray) || chainArray.length === 0) {
+    return {
+      list: [],
+      tokenMap: new Map(),
+      spotToken: null,
+      signature: '',
+    };
+  }
+
+  const atmIndex = getAtmIndex(chainArray, referencePrice);
+  const { start, end } = getWindowBounds(chainArray.length, atmIndex);
+  const windowRows = chainArray.slice(start, end);
+
+  const seen = new Set();
+  const optionTokens = [];
+  const tokenMap = new Map();
+
+  windowRows.forEach((row) => {
+    const callToken = row?.call?.instrument_token != null ? String(row.call.instrument_token) : null;
+    const putToken = row?.put?.instrument_token != null ? String(row.put.instrument_token) : null;
+
+    if (callToken && !seen.has(callToken)) {
+      seen.add(callToken);
+      optionTokens.push(callToken);
+      tokenMap.set(callToken, { type: 'call' });
+    }
+    if (putToken && !seen.has(putToken)) {
+      seen.add(putToken);
+      optionTokens.push(putToken);
+      tokenMap.set(putToken, { type: 'put' });
+    }
+  });
+
+  const spotToken = spotInfo?.token != null ? String(spotInfo.token) : null;
+  const list = optionTokens.map((token) => ({ instrument_token: token }));
+  if (spotToken && !seen.has(spotToken)) {
+    list.push({ instrument_token: spotToken });
+  }
+
+  const signature = `${optionTokens.join(',')}|spot:${spotToken || ''}`;
+
+  return {
+    list,
+    tokenMap,
+    spotToken,
+    signature,
+  };
+};
+
 export const useOptionChain = ({
   name,
   segment,
@@ -30,6 +132,7 @@ export const useOptionChain = ({
   tradingsymbol,
   instrumentToken,
   subscriptionType = 'quote',
+  initialLtp = null,
 }) => {
   const [chainData, setChainData] = useState([]);
   const [spotPrice, setSpotPrice] = useState(null);
@@ -55,46 +158,118 @@ export const useOptionChain = ({
   const lastFetchKeyRef = useRef(null);
   const spotTokenRef = useRef(null);
   const prevLiveByTokenRef = useRef({});
+  const chainRef = useRef([]);
+  const spotInfoRef = useRef(null);
+  const subscriptionSignatureRef = useRef('');
+
+  const seedFromSnapshot = useCallback(async (list) => {
+    if (!Array.isArray(list) || list.length === 0) return;
+
+    try {
+      const response = await api.post('/quotes/snapshot', { items: list });
+      const snapshot = response?.data;
+      if (!snapshot || typeof snapshot !== 'object') return;
+
+      const prev = prevLiveByTokenRef.current;
+      const next = { ...prev };
+      let hasChanges = false;
+      let optionDataReady = false;
+
+      tokenMapRef.current.forEach((_, token) => {
+        const normalized = normalizeSnapshot(snapshot[token]);
+        if (!normalized) return;
+        const { ltp, oi, volume } = normalized;
+        if (ltp == null && oi == null && volume == null) return;
+
+        const existing = prev[token];
+        if (
+          existing?.ltp !== ltp ||
+          existing?.oi !== oi ||
+          existing?.volume !== volume
+        ) {
+          next[token] = { ltp, oi, volume };
+          hasChanges = true;
+        }
+        optionDataReady = true;
+      });
+
+      if (hasChanges) {
+        prevLiveByTokenRef.current = next;
+        setLiveByToken(next);
+      }
+
+      const spotToken = spotTokenRef.current;
+      if (spotToken) {
+        const normalizedSpot = normalizeSnapshot(snapshot[spotToken]);
+        if (normalizedSpot?.ltp != null) {
+          setSpotPrice((prevPrice) => (prevPrice === normalizedSpot.ltp ? prevPrice : normalizedSpot.ltp));
+        }
+      }
+
+      if (optionDataReady && !ticksReadyRef.current) {
+        ticksReadyRef.current = true;
+        if (ticksReadyTimeoutRef.current) clearTimeout(ticksReadyTimeoutRef.current);
+        setTicksReady(true);
+      }
+    } catch {
+      // Snapshot seed is best-effort; live ticks will still update normally.
+    }
+  }, []);
 
   const unsubscribeFromOptions = useCallback(() => {
-    if (!subscribedRef.current.length) return;
-    unsubscribe(subscribedRef.current, subscriptionType);
-    subscribedRef.current = [];
+    if (subscribedRef.current.length) {
+      unsubscribe(subscribedRef.current, subscriptionType);
+      subscribedRef.current = [];
+    }
     tokenMapRef.current.clear();
     spotTokenRef.current = null;
+    subscriptionSignatureRef.current = '';
   }, [subscriptionType, unsubscribe]);
 
-  const subscribeToOptions = useCallback((chainArray, spotInfo) => {
-    const list = [];
-    const tokenMap = new Map();
+  const syncWindowSubscription = useCallback((chainArray, spotInfo, referencePrice) => {
+    const {
+      list,
+      tokenMap,
+      spotToken,
+      signature,
+    } = buildWindowSubscription(chainArray, spotInfo, referencePrice);
 
-    chainArray.forEach((row, index) => {
-      if (row.call?.instrument_token) {
-        const token = String(row.call.instrument_token);
-        list.push({ instrument_token: token });
-        tokenMap.set(token, { index, type: 'call' });
-      }
-      if (row.put?.instrument_token) {
-        const token = String(row.put.instrument_token);
-        list.push({ instrument_token: token });
-        tokenMap.set(token, { index, type: 'put' });
-      }
-    });
-
-    if (spotInfo?.token) {
-      const token = String(spotInfo.token);
-      list.push({ instrument_token: token });
-      spotTokenRef.current = token;
-    } else {
-      spotTokenRef.current = null;
+    if (signature === subscriptionSignatureRef.current) {
+      tokenMapRef.current = tokenMap;
+      spotTokenRef.current = spotToken;
+      return [];
     }
 
-    if (!list.length) return;
+    const prevMap = new Map(
+      subscribedRef.current.map((item) => [String(item.instrument_token), item]),
+    );
+    const nextMap = new Map(
+      list.map((item) => [String(item.instrument_token), item]),
+    );
+
+    const toSubscribe = [];
+    nextMap.forEach((item, token) => {
+      if (!prevMap.has(token)) toSubscribe.push(item);
+    });
+
+    const toUnsubscribe = [];
+    prevMap.forEach((item, token) => {
+      if (!nextMap.has(token)) toUnsubscribe.push(item);
+    });
+
+    if (toSubscribe.length) {
+      subscribe(toSubscribe, subscriptionType);
+    }
+    if (toUnsubscribe.length) {
+      unsubscribe(toUnsubscribe, subscriptionType);
+    }
 
     tokenMapRef.current = tokenMap;
+    spotTokenRef.current = spotToken;
     subscribedRef.current = list;
-    subscribe(list, subscriptionType);
-  }, [subscribe, subscriptionType]);
+    subscriptionSignatureRef.current = signature;
+    return toSubscribe;
+  }, [subscribe, subscriptionType, unsubscribe]);
 
   const fetchOptionChain = useCallback(async () => {
     if (!name && !tradingsymbol && !instrumentToken) return;
@@ -120,12 +295,15 @@ export const useOptionChain = ({
       const response = await api.get('/option-chain', { params });
       const payload = response?.data?.data;
       const chain = payload?.chain || [];
+      const nextSpotInfo = payload?.spotInstrumentInfo || null;
 
       setChainData(chain);
+      chainRef.current = chain;
       // Reset live data map when chain reloads so stale tokens don't linger.
       prevLiveByTokenRef.current = {};
       setLiveByToken({});
-      setSpotInstrumentInfo(payload?.spotInstrumentInfo || null);
+      setSpotInstrumentInfo(nextSpotInfo);
+      spotInfoRef.current = nextSpotInfo;
       setMeta({
         underlying: payload?.underlying || name,
         segment: payload?.segment || segment || null,
@@ -137,7 +315,10 @@ export const useOptionChain = ({
 
       unsubscribeFromOptions();
       if (chain.length) {
-        subscribeToOptions(chain, payload?.spotInstrumentInfo);
+        const newlySubscribed = syncWindowSubscription(chain, nextSpotInfo, initialLtp);
+        if (newlySubscribed.length) {
+          seedFromSnapshot(newlySubscribed);
+        }
         // 5-second fallback: if no ticks arrive (market closed, weekend),
         // show the table anyway rather than blocking the user forever.
         ticksReadyTimeoutRef.current = setTimeout(() => {
@@ -148,19 +329,21 @@ export const useOptionChain = ({
         }, 5000);
       } else {
         // Empty chain — nothing to wait for
+        subscriptionSignatureRef.current = '';
         ticksReadyRef.current = true;
         setTicksReady(true);
       }
     } catch (err) {
       setError(err?.response?.data?.details || err?.message || 'Failed to fetch option chain');
       setChainData([]);
+      chainRef.current = [];
       // On error, unblock so error message shows
       ticksReadyRef.current = true;
       setTicksReady(true);
     } finally {
       setLoading(false);
     }
-  }, [name, segment, expiry, tradingsymbol, instrumentToken, subscribeToOptions, unsubscribeFromOptions]);
+  }, [name, segment, expiry, tradingsymbol, instrumentToken, syncWindowSubscription, unsubscribeFromOptions, initialLtp, seedFromSnapshot]);
 
   const fetchExpiries = useCallback(async () => {
     if (!name && !tradingsymbol && !instrumentToken) return;
@@ -188,6 +371,14 @@ export const useOptionChain = ({
     };
   }, [name, segment, expiry, tradingsymbol, instrumentToken, fetchOptionChain, fetchExpiries, unsubscribeFromOptions]);
 
+  useEffect(() => {
+    if (!chainRef.current.length) return;
+    const newlySubscribed = syncWindowSubscription(chainRef.current, spotInfoRef.current, spotPrice);
+    if (newlySubscribed.length) {
+      seedFromSnapshot(newlySubscribed);
+    }
+  }, [spotPrice, syncWindowSubscription, seedFromSnapshot]);
+
   // Keep liveByToken in sync with ticks via RAF loop.
   // This replaces the chain-array-mutation approach: we update a flat token→values
   // map instead of cloning the whole chain array on every tick cycle.
@@ -196,7 +387,7 @@ export const useOptionChain = ({
   useEffect(() => {
     let animationFrameId;
     let lastUpdate = 0;
-    const THROTTLE_MS = 60;
+    const THROTTLE_MS = 33.33;
 
     const updateLoop = (timestamp) => {
       if (document.visibilityState === 'hidden') {
@@ -266,7 +457,7 @@ export const useOptionChain = ({
 
     let animationFrameId;
     let lastUpdate = 0;
-    const THROTTLE_MS = 60;
+    const THROTTLE_MS = 33.33;
 
     const updateLoop = (timestamp) => {
       if (timestamp - lastUpdate < THROTTLE_MS) {
@@ -279,6 +470,9 @@ export const useOptionChain = ({
       if (nextLtp != null) {
         setSpotPrice((prev) => (prev === nextLtp ? prev : nextLtp));
         lastUpdate = timestamp;
+        // NOTE: ticksReady is NOT set here. Spot tick arriving before option ticks
+        // would unlock the table with all option cells still at API fallback (0).
+        // ticksReady is set only when option token data arrives (see option RAF loop above).
       }
 
       animationFrameId = requestAnimationFrame(updateLoop);
@@ -288,10 +482,16 @@ export const useOptionChain = ({
     return () => cancelAnimationFrame(animationFrameId);
   }, [ticksRef, spotInstrumentInfo]);
 
+  // Unified ATM price used for both subscription centering and display slicing.
+  // Must match the priority used in syncWindowSubscription so visible strikes
+  // always equal the subscribed window.
+  const atmPrice = spotPrice ?? initialLtp ?? null;
+
   return {
     chainData,
     liveByToken,
     spotPrice,
+    atmPrice,
     spotInstrumentInfo,
     expiries,
     loading,
@@ -301,4 +501,3 @@ export const useOptionChain = ({
     meta,
   };
 };
-

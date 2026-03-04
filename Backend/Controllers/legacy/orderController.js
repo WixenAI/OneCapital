@@ -7,6 +7,7 @@ import Instrument from "../../Model/InstrumentModel.js";
 
 import {
   addToWatchlist,
+  removeFromWatchlist,
   updateTriggerInWatchlist,
 } from "../../Utils/OrderManager.js";
 import { checkOptionLimit, updateOptionUsage, rollbackOptionUsage } from "../../Utils/OptionLimitManager.js";
@@ -400,7 +401,7 @@ const postOrder = asyncHandler(async (req, res) => {
     const saved = await orderDoc.save();
 
     // Add to RAM (For Auto-Exit)
-    addToWatchlist(saved);
+    await addToWatchlist(saved);
 
     return res.json({ ok: true, message: "Order saved", order: saved });
   } catch (error) {
@@ -632,8 +633,19 @@ const updateOrder = asyncHandler(async (req, res) => {
       });
 
       if (!result.ok) {
+        if (result.error === 'already_closed_or_not_found') {
+          await removeFromWatchlist({
+            _id: existing._id,
+            instrument_token: existing.instrument_token || existing.security_Id,
+          });
+        }
         return res.status(409).json({ success: false, message: result.error || 'Failed to close order' });
       }
+
+      await removeFromWatchlist(result.order || {
+        _id: existing._id,
+        instrument_token: existing.instrument_token || existing.security_Id,
+      });
 
       return res.status(200).json({
         success: true,
@@ -769,10 +781,8 @@ const updateOrder = asyncHandler(async (req, res) => {
       return res.status(500).json({ success: false, message: 'Failed to update order' });
     }
 
-    // 👇 Update Watchlist (Auto-Exit System)
-    if ((updated.status || updated.order_status) !== 'CLOSED') {
-      updateTriggerInWatchlist(updated);
-    }
+    // Keep trigger registry in sync for all lifecycle changes.
+    await updateTriggerInWatchlist(updated);
 
     return res.status(200).json({ success: true, message: 'Order updated', order: updated });
 
@@ -825,6 +835,13 @@ const exitAllOpenOrder = asyncHandler(async (req, res) => {
         cameFrom: 'Open',
       });
 
+      if (result.ok) {
+        await removeFromWatchlist(result.order || {
+          _id: order._id,
+          instrument_token: order.instrument_token || order.security_Id,
+        });
+      }
+
       results.push({
         id: order._id,
         status: result.ok ? "Success" : "Failed",
@@ -857,6 +874,7 @@ const deleteOrder = asyncHandler(async (req, res) => {
     if (!deleted) {
       return res.status(404).json({ success: false, message: "Order not found" });
     }
+    await removeFromWatchlist(deleted);
     return res.status(200).json({ success: true, message: "Order deleted successfully" });
   } catch (error) {
     return res.status(500).json({ success: false, message: "Failed to delete order" });

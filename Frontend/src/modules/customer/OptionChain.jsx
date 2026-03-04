@@ -148,6 +148,7 @@ const OptionChain = () => {
     chainData,
     liveByToken,
     spotPrice,
+    atmPrice,
     spotInstrumentInfo,
     expiries,
     loading,
@@ -161,6 +162,7 @@ const OptionChain = () => {
     tradingsymbol: stockTradingsymbol,
     instrumentToken: stockInstrumentToken,
     subscriptionType: 'full',
+    initialLtp: initialLtpData?.ltp ?? null,
   });
 
   const displayExpiry = selectedExpiry || meta.expiry || expiries[0] || '';
@@ -174,13 +176,19 @@ const OptionChain = () => {
     return () => clearTimeout(timer);
   }, [underlyingName, selectedExpiry]);
 
+  // Clear stale spotSnapshot when the spot token changes (symbol switch)
+  // so header doesn't show stale data from previous instrument.
+  useEffect(() => {
+    setSpotSnapshot(null);
+  }, [spotInstrumentInfo?.token]);
+
   useEffect(() => {
     const token = spotInstrumentInfo?.token ? String(spotInstrumentInfo.token) : null;
     if (!token) return undefined;
 
     let animationFrameId;
     let lastUpdate = 0;
-    const THROTTLE_MS = 120;
+    const THROTTLE_MS = 33.33;
 
     const updateLoop = (timestamp) => {
       if (timestamp - lastUpdate < THROTTLE_MS) {
@@ -223,7 +231,9 @@ const OptionChain = () => {
     return initialLtpData?.changePercent ?? null;
   }, [spotSnapshot, headerLtp, headerChange, initialLtpData]);
 
-  const currentPrice = headerLtp || 0;
+  // Use atmPrice (from hook) for ATM strike calculation so display window
+  // always matches the subscribed window. headerLtp is only for header display.
+  const currentPrice = atmPrice || 0;
 
   const { filteredChain, atmStrike } = useMemo(() => {
     if (!chainData?.length) {

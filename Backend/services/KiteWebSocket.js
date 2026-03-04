@@ -7,14 +7,55 @@ import { onMarketTick } from "../Utils/OrderManager.js";
 import KiteCredential from "../Model/KiteCredentialModel.js";
 
 const roomFor = (token) => `sec:${token}`;
+const MODE_PRIORITY = Object.freeze({
+  ltp: 1,
+  quote: 2,
+  full: 3
+});
+
+const normalizeMode = (mode) => {
+  const raw = String(mode || '').toLowerCase();
+  return MODE_PRIORITY[raw] ? raw : 'full';
+};
+
+const hasKnownMode = (mode) => {
+  if (typeof mode !== 'string') return false;
+  return Boolean(MODE_PRIORITY[String(mode).toLowerCase()]);
+};
+
+const modePriority = (mode) => {
+  if (!hasKnownMode(mode)) return 0;
+  return MODE_PRIORITY[String(mode).toLowerCase()];
+};
+
+const isModeEqual = (leftMode, rightMode) => {
+  if (!hasKnownMode(leftMode) && !hasKnownMode(rightMode)) return true;
+  if (!hasKnownMode(leftMode) || !hasKnownMode(rightMode)) return false;
+  return modePriority(leftMode) === modePriority(rightMode);
+};
+
+const higherMode = (leftMode, rightMode) => {
+  if (!hasKnownMode(leftMode)) return normalizeMode(rightMode);
+  if (!hasKnownMode(rightMode)) return normalizeMode(leftMode);
+  return modePriority(leftMode) >= modePriority(rightMode)
+    ? normalizeMode(leftMode)
+    : normalizeMode(rightMode);
+};
 
 export class KiteWebSocket {
   constructor() {
     this.ticker = null;
     this.subscribedTokens = new Set();
+    this.tokenModes = new Map();
     this.subscriptionQueue = [];
     this.last = new Map();
     this.isConnected = false;
+    this.tickTraceEnabled = process.env.MARKET_TICK_TRACE !== 'false';
+    const traceLogLimitRaw = Number.parseInt(process.env.MARKET_TICK_TRACE_LOG_LIMIT || '5', 10);
+    this.tickTraceLogLimit = Number.isFinite(traceLogLimitRaw) && traceLogLimitRaw > 0 ? traceLogLimitRaw : 5;
+    this.tickTraceLogged = 0;
+    this.tickTraceSeqByToken = new Map();
+    this._reconnectReplay = null;
   }
 
   get ns() {
@@ -87,7 +128,7 @@ export class KiteWebSocket {
       this.isConnected = true;
       this.reconnectAttempts = 0; // Reset on successful connection
 
-      // Process queued subscriptions
+      // Process queued subscriptions (accumulated while disconnected)
       if (this.subscriptionQueue.length > 0) {
         console.log(`[KiteWS] Processing ${this.subscriptionQueue.length} queued subscriptions`);
         const queue = [...this.subscriptionQueue];
@@ -97,6 +138,30 @@ export class KiteWebSocket {
           this.subscribeTokens(tokens, mode);
         });
       }
+
+      // Replay subscriptions from before disconnect. The fresh ticker has
+      // nothing subscribed, so we must clear local state and re-subscribe.
+      if (this._reconnectReplay) {
+        const { tokens, modes } = this._reconnectReplay;
+        this._reconnectReplay = null;
+
+        // Clear stale local state — the new connection starts empty
+        this.subscribedTokens.clear();
+        this.tokenModes.clear();
+
+        // Group saved tokens by mode for efficient batch subscribe
+        const byMode = {};
+        for (const token of tokens) {
+          const mode = modes.get(token) || 'full';
+          (byMode[mode] ??= []).push(token);
+        }
+        let replayedCount = 0;
+        for (const [mode, tokenList] of Object.entries(byMode)) {
+          this.subscribeTokens(tokenList, mode);
+          replayedCount += tokenList.length;
+        }
+        console.log(`[KiteWS] 🔄 Replayed ${replayedCount} tokens after reconnect (modes: ${Object.keys(byMode).join(', ')})`);
+      }
     });
 
     // On tick data received
@@ -104,10 +169,22 @@ export class KiteWebSocket {
       ticks.forEach(tick => this.processTick(tick));
     });
 
-    // On disconnection
+    // On disconnection — save subscription state for replay on reconnect
     this.ticker.on('disconnect', (error) => {
       console.warn("[KiteWS] ❌ Disconnected:", error?.message || error);
       this.isConnected = false;
+
+      // Snapshot current subscriptions so they can be replayed after reconnect.
+      // The fresh ticker connection has no subscriptions, but subscribedTokens
+      // still holds the old set — without replay, subscribeTokens() would skip
+      // them because of the "already subscribed" filter.
+      if (this.subscribedTokens.size > 0) {
+        this._reconnectReplay = {
+          tokens: new Set(this.subscribedTokens),
+          modes: new Map(this.tokenModes),
+        };
+        console.log(`[KiteWS] Saved ${this.subscribedTokens.size} tokens for reconnect replay`);
+      }
     });
 
     // On error - check for auth errors
@@ -235,15 +312,16 @@ export class KiteWebSocket {
    */
   subscribe(list, mode = 'full') {
     if (!Array.isArray(list) || !list.length) return;
+    const normalizedMode = normalizeMode(mode);
 
     // Extract instrument tokens (convert to integers)
-    const tokens = list
+    const tokens = [...new Set(list
       .map(inst => {
         // Support both instrument_token and securityId for backward compatibility
         const token = inst.instrument_token || inst.securityId;
         return parseInt(token);
       })
-      .filter(token => !isNaN(token) && token > 0);
+      .filter(token => !isNaN(token) && token > 0))];
 
     if (!tokens.length) {
       console.warn("[KiteWS] No valid instrument tokens provided");
@@ -253,7 +331,7 @@ export class KiteWebSocket {
     // If not connected, queue the subscription
     if (!this.isConnected || !this.ticker) {
       console.log(`[KiteWS] Not connected. Queueing ${tokens.length} tokens`);
-      this.subscriptionQueue.push({ tokens, mode });
+      this.subscriptionQueue.push({ tokens, mode: normalizedMode });
 
       // Attempt to connect if ticker not initialized
       if (!this.ticker) {
@@ -262,12 +340,29 @@ export class KiteWebSocket {
       return;
     }
 
-    this.subscribeTokens(tokens, mode);
+    this.subscribeTokens(tokens, normalizedMode);
   }
 
   subscribeTokens(tokens, mode = 'full') {
+    const uniqueTokens = [...new Set(tokens)];
+    const normalizedMode = normalizeMode(mode);
     // 1. Filter new tokens that need subscription
-    const newTokens = tokens.filter(t => !this.subscribedTokens.has(t));
+    const newTokens = uniqueTokens.filter(t => !this.subscribedTokens.has(t));
+    const modeBuckets = {
+      ltp: [],
+      quote: [],
+      full: []
+    };
+
+    uniqueTokens.forEach((token) => {
+      const currentMode = this.tokenModes.get(token);
+      // Subscribe requests are treated as upgrade-only so one low-mode subscriber
+      // cannot downgrade another active full/quote consumer.
+      const targetMode = currentMode ? higherMode(currentMode, normalizedMode) : normalizedMode;
+      if (!isModeEqual(currentMode, targetMode)) {
+        modeBuckets[targetMode].push(token);
+      }
+    });
 
     try {
       // Subscribe to NEW tokens only
@@ -277,20 +372,20 @@ export class KiteWebSocket {
         newTokens.forEach(token => this.subscribedTokens.add(token));
       }
 
-      // 2. ALWAYS set mode for ALL requested tokens (to allow upgrades/downgrades)
-      // This fixes the issue where upgrading 'quote' -> 'full' was ignored if already subscribed
+      // 2. Set mode only for tokens whose effective mode changed.
       const modeMap = {
         'ltp': this.ticker.modeLTP,
         'quote': this.ticker.modeQuote,
         'full': this.ticker.modeFull
       };
-      const tickerMode = modeMap[mode] || this.ticker.modeFull;
-
-      // Only set mode if there are tokens to set
-      if (tokens.length > 0) {
-        this.ticker.setMode(tickerMode, tokens);
-        console.log(`[KiteWS] Set mode '${mode}' for ${tokens.length} tokens`);
-      }
+      Object.keys(modeBuckets).forEach((modeKey) => {
+        const targetTokens = modeBuckets[modeKey];
+        if (!targetTokens.length) return;
+        const tickerMode = modeMap[modeKey] || this.ticker.modeFull;
+        this.ticker.setMode(tickerMode, targetTokens);
+        targetTokens.forEach((token) => this.tokenModes.set(token, modeKey));
+        console.log(`[KiteWS] Set mode '${modeKey}' for ${targetTokens.length} tokens`);
+      });
     } catch (error) {
       console.error("[KiteWS] Subscription error:", error?.message || error);
     }
@@ -304,12 +399,12 @@ export class KiteWebSocket {
     if (!Array.isArray(list) || !list.length) return;
     if (!this.isConnected || !this.ticker) return;
 
-    const tokens = list
+    const tokens = [...new Set(list
       .map(inst => {
         const token = inst.instrument_token || inst.securityId;
         return parseInt(token);
       })
-      .filter(token => !isNaN(token) && this.subscribedTokens.has(token));
+      .filter(token => !isNaN(token) && this.subscribedTokens.has(token)))];
 
     if (!tokens.length) return;
 
@@ -317,7 +412,10 @@ export class KiteWebSocket {
 
     try {
       this.ticker.unsubscribe(tokens);
-      tokens.forEach(token => this.subscribedTokens.delete(token));
+      tokens.forEach(token => {
+        this.subscribedTokens.delete(token);
+        this.tokenModes.delete(token);
+      });
 
       console.log(`[KiteWS] ✅ Unsubscribed. Remaining: ${this.subscribedTokens.size}`);
     } catch (error) {
@@ -333,17 +431,23 @@ export class KiteWebSocket {
   setMode(list, mode = 'full') {
     if (!Array.isArray(list) || !list.length) return;
     if (!this.isConnected || !this.ticker) return;
+    const normalizedMode = normalizeMode(mode);
 
-    const tokens = list
+    const tokens = [...new Set(list
       .map(inst => {
         const token = inst.instrument_token || inst.securityId;
         return parseInt(token);
       })
-      .filter(token => !isNaN(token));
+      .filter(token => !isNaN(token)))];
 
-    if (!tokens.length) return;
+    const modeChangeTokens = tokens.filter((token) => {
+      const currentMode = this.tokenModes.get(token);
+      return !isModeEqual(currentMode, normalizedMode);
+    });
 
-    console.log(`[KiteWS] Setting mode '${mode}' for ${tokens.length} tokens`);
+    if (!modeChangeTokens.length) return;
+
+    console.log(`[KiteWS] Setting mode '${normalizedMode}' for ${modeChangeTokens.length} tokens`);
 
     try {
       const modeMap = {
@@ -351,8 +455,9 @@ export class KiteWebSocket {
         'quote': this.ticker.modeQuote,
         'full': this.ticker.modeFull
       };
-      const tickerMode = modeMap[mode] || this.ticker.modeFull;
-      this.ticker.setMode(tickerMode, tokens);
+      const tickerMode = modeMap[normalizedMode] || this.ticker.modeFull;
+      this.ticker.setMode(tickerMode, modeChangeTokens);
+      modeChangeTokens.forEach((token) => this.tokenModes.set(token, normalizedMode));
     } catch (error) {
       console.error("[KiteWS] Set mode error:", error?.message || error);
     }
@@ -363,6 +468,13 @@ export class KiteWebSocket {
    */
   processTick(tick) {
     const token = String(tick.instrument_token);
+    const serverReceiveTs = this.tickTraceEnabled ? Date.now() : null;
+    const exchangeTsMs = tick?.exchange_timestamp instanceof Date
+      ? tick.exchange_timestamp.getTime()
+      : (tick?.exchange_timestamp ? Number(new Date(tick.exchange_timestamp).getTime()) : null);
+    const lastTradeTsMs = tick?.last_trade_time instanceof Date
+      ? tick.last_trade_time.getTime()
+      : (tick?.last_trade_time ? Number(new Date(tick.last_trade_time).getTime()) : null);
 
     // Calculate net change and percent change
     const ltp = tick.last_price || 0;
@@ -415,11 +527,36 @@ export class KiteWebSocket {
       }
     }
 
+    if (this.tickTraceEnabled) {
+      const currentSeq = this.tickTraceSeqByToken.get(token) || 0;
+      const nextSeq = currentSeq + 1;
+      this.tickTraceSeqByToken.set(token, nextSeq);
+      const serverEmitTs = Date.now();
+      const roomSizeAtEmit = this.ns.adapter.rooms.get(roomFor(token))?.size || 0;
+      payload.__trace = {
+        seq: nextSeq,
+        serverReceiveTs,
+        serverEmitTs,
+        exchangeTsMs: Number.isFinite(exchangeTsMs) ? exchangeTsMs : null,
+        lastTradeTsMs: Number.isFinite(lastTradeTsMs) ? lastTradeTsMs : null,
+        sourceToServerMs: Number.isFinite(exchangeTsMs) ? serverReceiveTs - exchangeTsMs : null,
+        roomSizeAtEmit,
+      };
+      if (this.tickTraceLogged < this.tickTraceLogLimit) {
+        const { sourceToServerMs } = payload.__trace;
+        console.log(
+          `[KiteWS TRACE] token=${token} seq=${nextSeq} srvRecv=${serverReceiveTs} srvEmit=${serverEmitTs} srvDeltaMs=${serverEmitTs - serverReceiveTs} sourceToServerMs=${sourceToServerMs ?? 'na'} roomSize=${roomSizeAtEmit} mode=${tick.mode} ltp=${ltp}`
+        );
+        this.tickTraceLogged += 1;
+      }
+    }
+
     // Update cache
     this.last.set(token, { ...this.last.get(token), ...payload });
 
     // Emit to Socket.IO room (room key = instrument_token)
-    this.ns.to(roomFor(token)).emit("market_update", payload);
+    const marketChannel = this.ns.to(roomFor(token)).compress(false);
+    marketChannel.emit("market_update", payload);
 
     // Trigger OrderManager callback for stop-loss/target monitoring
     if (ltp > 0) {
@@ -474,6 +611,9 @@ export class KiteWebSocket {
       this.ticker = null;
       this.isConnected = false;
       this.subscribedTokens.clear();
+      this.tokenModes.clear();
+      this.tickTraceSeqByToken.clear();
+      this.tickTraceLogged = 0;
     }
   }
 

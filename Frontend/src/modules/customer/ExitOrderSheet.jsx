@@ -51,7 +51,7 @@ const ExitOrderSheet = ({
 
     let animationFrameId;
     let lastUpdate = 0;
-    const THROTTLE_MS = 120;
+    const THROTTLE_MS = 33.33;
 
     const updateLoop = (timestamp) => {
       if (timestamp - lastUpdate >= THROTTLE_MS) {
