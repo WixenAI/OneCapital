@@ -11,7 +11,7 @@ const computeValidity = (productType, expiry) => {
 
   if (productType === 'MIS') {
     const endOfDay = new Date(now);
-    endOfDay.setHours(15, 30, 0, 0);
+    endOfDay.setHours(15, 15, 0, 0);
     return { type: 'DAY', expiresAt: endOfDay.toISOString() };
   }
 
@@ -19,7 +19,7 @@ const computeValidity = (productType, expiry) => {
   if (expiry) {
     const expiryDate = new Date(expiry);
     if (!Number.isNaN(expiryDate.getTime())) {
-      expiryDate.setHours(15, 30, 0, 0);
+      expiryDate.setHours(15, 15, 0, 0);
       return { type: 'EXPIRY', expiresAt: expiryDate.toISOString() };
     }
   }
@@ -27,7 +27,7 @@ const computeValidity = (productType, expiry) => {
   // Equity longterm: 7 calendar days from now, at market close
   const equity7d = new Date(now);
   equity7d.setDate(equity7d.getDate() + 7);
-  equity7d.setHours(15, 30, 0, 0);
+  equity7d.setHours(15, 15, 0, 0);
   return { type: 'EQUITY_7D', expiresAt: equity7d.toISOString() };
 };
 
@@ -543,7 +543,7 @@ const OrderBottomSheet = ({
                 {(() => {
                   const v = computeValidity(productType, instrumentExpiry);
                   const d = new Date(v.expiresAt);
-                  return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) + ', 3:30 PM';
+                  return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) + ', 3:15 PM';
                 })()}
               </span>
             </div>

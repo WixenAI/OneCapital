@@ -225,7 +225,13 @@ const Orders = () => {
         (o) => o.product === 'MIS' && !closedStatuses.has(o.status) && !hiddenStatuses.has(o.status)
       );
 
-      const closed = mappedOrders.filter((o) => closedStatuses.has(o.status));
+      const closed = mappedOrders
+        .filter((o) => closedStatuses.has(o.status))
+        .sort((a, b) => {
+          const aTime = new Date(a.closed_at || a.exit_at || a.createdAt).getTime();
+          const bTime = new Date(b.closed_at || b.exit_at || b.createdAt).getTime();
+          return bTime - aTime;
+        });
 
       const holdingOrders = mappedOrders.filter(
         (o) => longTermProducts.has(o.product) && !closedStatuses.has(o.status) && !hiddenStatuses.has(o.status)
@@ -757,7 +763,7 @@ const Orders = () => {
                   {activeTab === 'holdings' && order.validity_expires_at && order.validity_mode !== 'INTRADAY_DAY' && (
                     <div className="px-3 sm:px-4 pb-1 flex items-center gap-1.5 text-[10px] sm:text-xs text-[#617589] dark:text-[#9cb7aa]">
                       <span className="material-symbols-outlined text-[14px]">schedule</span>
-                      <span>Valid till {new Date(order.validity_expires_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}, 3:30 PM</span>
+                      <span>Valid till {new Date(order.validity_expires_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}, 3:15 PM</span>
                       {order.validity_extended_count > 0 && (
                         <span className="text-[9px] text-[#617589]">(+{order.validity_extended_count}x extended)</span>
                       )}

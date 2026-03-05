@@ -10,6 +10,21 @@ const EQUITY_VALIDITY_DAYS = 7;
 const MARKET_CLOSE_HOUR = 15;
 const MARKET_CLOSE_MINUTE = 15;  // Market closes at 3:15 PM IST sharp
 const EXTENSION_WINDOW_HOURS = 24;
+const IST_OFFSET_MINUTES = 330; // IST = UTC+5:30 = 330 minutes
+
+/**
+ * Set a Date to a specific IST time (hour:minute) on the same IST calendar date.
+ * Avoids fragile toLocaleDateString → new Date(string) parsing.
+ */
+function setISTTime(date, hour, minute) {
+  const d = new Date(date);
+  const istMs = d.getTime() + IST_OFFSET_MINUTES * 60 * 1000;
+  const istDate = new Date(istMs);
+  const y = istDate.getUTCFullYear();
+  const m = istDate.getUTCMonth();
+  const day = istDate.getUTCDate();
+  return new Date(Date.UTC(y, m, day, hour, minute, 0, 0) - IST_OFFSET_MINUTES * 60 * 1000);
+}
 
 /**
  * Check if an order is for cash equity instruments (NSE/BSE equity, not derivatives).
@@ -85,13 +100,7 @@ export function computeEquity7DayExpiry(placedAt) {
   // e.g. placed on Friday = day 1, expires on Thursday = day 7 (+6 calendar days).
   expiry.setDate(expiry.getDate() + EQUITY_VALIDITY_DAYS - 1);
 
-  // Set to market close time in IST (UTC+5:30)
-  // 15:15 IST = 09:45 UTC
-  const istOffsetMs = 5.5 * 60 * 60 * 1000;
-  const expiryDateOnly = new Date(expiry.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }));
-  const expiryIST = new Date(expiryDateOnly.getTime() + (MARKET_CLOSE_HOUR * 60 + MARKET_CLOSE_MINUTE) * 60 * 1000 - istOffsetMs);
-
-  return expiryIST;
+  return setISTTime(expiry, MARKET_CLOSE_HOUR, MARKET_CLOSE_MINUTE);
 }
 
 /**
@@ -112,14 +121,10 @@ export function resolveOrderValidity({ product, exchange, segment, symbol, instr
 
   // MIS = intraday, expires at market close same day
   if (productUp === 'MIS') {
-    const endOfDay = new Date(now.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }));
-    const istOffsetMs = 5.5 * 60 * 60 * 1000;
-    const expiresAt = new Date(endOfDay.getTime() + (MARKET_CLOSE_HOUR * 60 + MARKET_CLOSE_MINUTE) * 60 * 1000 - istOffsetMs);
-
     return {
       mode: 'INTRADAY_DAY',
       startsAt: now,
-      expiresAt,
+      expiresAt: setISTTime(now, MARKET_CLOSE_HOUR, MARKET_CLOSE_MINUTE),
     };
   }
 
@@ -127,15 +132,10 @@ export function resolveOrderValidity({ product, exchange, segment, symbol, instr
   if (instrumentExpiry) {
     const expDate = new Date(instrumentExpiry);
     if (!Number.isNaN(expDate.getTime())) {
-      // Set expiry to market close on that date
-      const istOffsetMs = 5.5 * 60 * 60 * 1000;
-      const expiryDateOnly = new Date(expDate.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }));
-      const expiresAt = new Date(expiryDateOnly.getTime() + (MARKET_CLOSE_HOUR * 60 + MARKET_CLOSE_MINUTE) * 60 * 1000 - istOffsetMs);
-
       return {
         mode: 'INSTRUMENT_EXPIRY',
         startsAt: now,
-        expiresAt,
+        expiresAt: setISTTime(expDate, MARKET_CLOSE_HOUR, MARKET_CLOSE_MINUTE),
       };
     }
   }

@@ -209,6 +209,7 @@ const Portfolio = () => {
   const holdingsExitAllowed = user?.holdingsExitAllowed === true;
   const [activeTab, setActiveTab] = useState('positions');
   const [selectedFilter, setSelectedFilter] = useState('session');
+  const [listFilter, setListFilter] = useState('today');
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo] = useState('');
   const [sessionBoundaryStart, setSessionBoundaryStart] = useState('');
@@ -645,7 +646,7 @@ const Portfolio = () => {
     return () => cancelAnimationFrame(animationFrameId);
   }, [liveTokens, ticksRef]);
 
-  const filteredPositions = useMemo(
+  const pnlFilteredPositions = useMemo(
     () =>
       allPositions.filter((item) =>
         isWithinFilter({
@@ -659,10 +660,9 @@ const Portfolio = () => {
     [allPositions, selectedFilter, customFrom, customTo, sessionBoundaryStart]
   );
 
-  const filteredHoldings = useMemo(
+  const pnlFilteredHoldings = useMemo(
     () =>
       allHoldings.filter((item) => {
-        // Keep all open holdings visible regardless of date filter.
         if (!item.isClosed) return true;
         return isWithinFilter({
           date: item.filterDate || item.placedAtDate,
@@ -673,6 +673,58 @@ const Portfolio = () => {
         });
       }),
     [allHoldings, selectedFilter, customFrom, customTo, sessionBoundaryStart]
+  );
+
+  const listPositions = useMemo(
+    () =>
+      allPositions
+        .filter((item) => {
+          if (!item.isClosed) return true;
+          return isWithinFilter({
+            date: item.filterDate || item.placedAtDate,
+            filter: listFilter,
+            customFrom: '',
+            customTo: '',
+            sessionBoundaryStart,
+          });
+        })
+        .sort((a, b) => {
+          if (!a.isClosed && b.isClosed) return -1;
+          if (a.isClosed && !b.isClosed) return 1;
+          if (a.isClosed && b.isClosed) {
+            const aTime = (a.exitAtDate || a.placedAtDate || new Date(0)).getTime();
+            const bTime = (b.exitAtDate || b.placedAtDate || new Date(0)).getTime();
+            return bTime - aTime;
+          }
+          return 0;
+        }),
+    [allPositions, listFilter, sessionBoundaryStart]
+  );
+
+  const listHoldings = useMemo(
+    () =>
+      allHoldings
+        .filter((item) => {
+          if (!item.isClosed) return true;
+          return isWithinFilter({
+            date: item.filterDate || item.placedAtDate,
+            filter: listFilter,
+            customFrom: '',
+            customTo: '',
+            sessionBoundaryStart,
+          });
+        })
+        .sort((a, b) => {
+          if (!a.isClosed && b.isClosed) return -1;
+          if (a.isClosed && !b.isClosed) return 1;
+          if (a.isClosed && b.isClosed) {
+            const aTime = (a.exitAtDate || a.placedAtDate || new Date(0)).getTime();
+            const bTime = (b.exitAtDate || b.placedAtDate || new Date(0)).getTime();
+            return bTime - aTime;
+          }
+          return 0;
+        }),
+    [allHoldings, listFilter, sessionBoundaryStart]
   );
 
   const summary = useMemo(() => {
@@ -713,7 +765,7 @@ const Portfolio = () => {
       }).netPnl;
     };
 
-    const allItems = [...filteredHoldings, ...filteredPositions];
+    const allItems = [...pnlFilteredHoldings, ...pnlFilteredPositions];
     const netPnL = allItems.reduce((sum, item) => sum + computeItemPnl(item), 0);
     const totalCostBasis = allItems.reduce(
       (sum, item) => sum + toNumber(item.avgPrice) * toNumber(item.qty),
@@ -726,13 +778,13 @@ const Portfolio = () => {
       netPnL,
       netPnLPercent,
     };
-  }, [filteredHoldings, filteredPositions, livePrices]);
+  }, [pnlFilteredHoldings, pnlFilteredPositions, livePrices]);
 
   const netPnlValueToneClass = summary.netPnL >= 0
     ? 'text-emerald-300 drop-shadow-[0_1px_1px_rgba(0,0,0,0.2)]'
     : 'text-red-500/90 drop-shadow-[0_1px_1px_rgba(0,0,0,0.2)]';
 
-  const displayData = activeTab === 'holdings' ? filteredHoldings : filteredPositions;
+  const displayData = activeTab === 'holdings' ? listHoldings : listPositions;
   const displayRows = useMemo(
     () =>
       displayData.map((item) => {
@@ -1043,26 +1095,38 @@ const Portfolio = () => {
 
       {/* Holdings / Positions Tabs - proper full-width tabs below P&L card */}
       <div className="px-3 sm:px-4 pt-3 pb-1 bg-[#f6f7f8] dark:bg-[#050806]">
-        <div className="flex rounded-xl bg-white dark:bg-[#0b120f] border border-gray-100 dark:border-[#22352d] overflow-hidden">
+        <div className="flex items-center gap-2">
+          <div className="flex flex-1 rounded-xl bg-white dark:bg-[#0b120f] border border-gray-100 dark:border-[#22352d] overflow-hidden">
+            <button
+              onClick={() => setActiveTab('holdings')}
+              className={`flex-1 py-2.5 text-center text-sm font-semibold transition-colors ${
+                activeTab === 'holdings'
+                  ? 'bg-[#137fec] text-white'
+                  : 'text-[#617589] dark:text-[#9cb7aa] hover:bg-gray-50 dark:hover:bg-[#16231d]'
+              }`}
+            >
+              Holdings ({listHoldings.length})
+            </button>
+            <button
+              onClick={() => setActiveTab('positions')}
+              className={`flex-1 py-2.5 text-center text-sm font-semibold transition-colors ${
+                activeTab === 'positions'
+                  ? 'bg-[#137fec] text-white'
+                  : 'text-[#617589] dark:text-[#9cb7aa] hover:bg-gray-50 dark:hover:bg-[#16231d]'
+              }`}
+            >
+              Positions ({listPositions.length})
+            </button>
+          </div>
           <button
-            onClick={() => setActiveTab('holdings')}
-            className={`flex-1 py-2.5 text-center text-sm font-semibold transition-colors ${
-              activeTab === 'holdings'
-                ? 'bg-[#137fec] text-white'
-                : 'text-[#617589] dark:text-[#9cb7aa] hover:bg-gray-50 dark:hover:bg-[#16231d]'
-            }`}
+            type="button"
+            onClick={() => setListFilter(prev => prev === 'today' ? 'session' : 'today')}
+            className="h-9 w-9 shrink-0 flex items-center justify-center rounded-xl bg-white dark:bg-[#0b120f] border border-gray-100 dark:border-[#22352d] text-[#617589] dark:text-[#9cb7aa] hover:bg-gray-50 dark:hover:bg-[#16231d] transition-colors"
+            title={listFilter === 'today' ? 'Showing today' : 'Showing this week'}
           >
-            Holdings ({filteredHoldings.length})
-          </button>
-          <button
-            onClick={() => setActiveTab('positions')}
-            className={`flex-1 py-2.5 text-center text-sm font-semibold transition-colors ${
-              activeTab === 'positions'
-                ? 'bg-[#137fec] text-white'
-                : 'text-[#617589] dark:text-[#9cb7aa] hover:bg-gray-50 dark:hover:bg-[#16231d]'
-            }`}
-          >
-            Positions ({filteredPositions.length})
+            <span className="material-symbols-outlined text-[18px]">
+              {listFilter === 'today' ? 'today' : 'date_range'}
+            </span>
           </button>
         </div>
       </div>
@@ -1193,7 +1257,7 @@ const Portfolio = () => {
                 {activeTab === 'holdings' && item.validity_expires_at && item.validity_mode !== 'INTRADAY_DAY' && (
                   <div className="px-3 pb-1 flex items-center gap-1.5 text-[10px] sm:text-xs text-[#617589] dark:text-[#9cb7aa]">
                     <span className="material-symbols-outlined text-[14px]">schedule</span>
-                    <span>Valid till {new Date(item.validity_expires_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}, 3:30 PM</span>
+                    <span>Valid till {new Date(item.validity_expires_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}, 3:15 PM</span>
                     {item.validity_extended_count > 0 && (
                       <span className="text-[9px] text-[#617589]">(+{item.validity_extended_count}x extended)</span>
                     )}

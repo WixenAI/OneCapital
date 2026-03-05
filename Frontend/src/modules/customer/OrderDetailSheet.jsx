@@ -107,7 +107,7 @@ const OrderDetailSheet = ({ isOpen, order, tab, onClose }) => {
   };
 
   const validityLabel = order.validity_expires_at && order.validity_mode !== 'INTRADAY_DAY'
-    ? `${new Date(order.validity_expires_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}, 3:30 PM${order.validity_extended_count > 0 ? ` (+${order.validity_extended_count}x)` : ''}`
+    ? `${new Date(order.validity_expires_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}, 3:15 PM${order.validity_extended_count > 0 ? ` (+${order.validity_extended_count}x)` : ''}`
     : null;
 
   return (

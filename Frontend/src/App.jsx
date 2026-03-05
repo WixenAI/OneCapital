@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import './App.css';
 
@@ -14,66 +14,66 @@ import CustomerLayout from './layouts/CustomerLayout';
 import BrokerLayout from './layouts/BrokerLayout';
 import CFDRiskWarningModal from './components/shared/CFDRiskWarningModal';
 
-// Customer Modules - Main Pages
-import Watchlist from './modules/customer/Watchlist';
-import Orders from './modules/customer/Orders';
-import Portfolio from './modules/customer/Portfolio';
-import PortfolioInvoice from './modules/customer/PortfolioInvoice';
-import Profile from './modules/customer/Profile';
-import ProfileEdit from './modules/customer/ProfileEdit';
-import Funds from './modules/customer/Funds';
-import FundStatement from './modules/customer/FundStatement';
-import AddFunds from './modules/customer/AddFunds';
-import AddFundsConfirm from './modules/customer/AddFundsConfirm';
-import WithdrawFunds from './modules/customer/WithdrawFunds';
-import WithdrawalConfirm from './modules/customer/WithdrawalConfirm';
-import Payments from './modules/customer/Payments';
-import AccountSettings from './modules/customer/AccountSettings';
-import AddBankAccount from './modules/customer/AddBankAccount';
-import AccountSummary from './modules/customer/AccountSummary';
-import Help from './modules/customer/Help';
-import KycDetails from './modules/customer/KycDetails';
-import KYCDocuments from './modules/customer/KYCDocuments';
-import KYCPending from './modules/customer/KYCPending';
-import OrderConfirmation from './modules/customer/OrderConfirmation';
-import OptionChain from './modules/customer/OptionChain';
-import ChartView from './modules/customer/ChartView';
-import OrderBook from './modules/customer/OrderBook';
+// Auth (small, always needed)
+const Login = lazy(() => import('./modules/auth/Login'));
+const Signup = lazy(() => import('./modules/auth/Signup'));
+const RegistrationStatus = lazy(() => import('./modules/auth/RegistrationStatus'));
+
+// Customer Modules
+const Watchlist = lazy(() => import('./modules/customer/Watchlist'));
+const Orders = lazy(() => import('./modules/customer/Orders'));
+const Portfolio = lazy(() => import('./modules/customer/Portfolio'));
+const PortfolioInvoice = lazy(() => import('./modules/customer/PortfolioInvoice'));
+const Profile = lazy(() => import('./modules/customer/Profile'));
+const ProfileEdit = lazy(() => import('./modules/customer/ProfileEdit'));
+const Funds = lazy(() => import('./modules/customer/Funds'));
+const FundStatement = lazy(() => import('./modules/customer/FundStatement'));
+const AddFunds = lazy(() => import('./modules/customer/AddFunds'));
+const AddFundsConfirm = lazy(() => import('./modules/customer/AddFundsConfirm'));
+const WithdrawFunds = lazy(() => import('./modules/customer/WithdrawFunds'));
+const WithdrawalConfirm = lazy(() => import('./modules/customer/WithdrawalConfirm'));
+const Payments = lazy(() => import('./modules/customer/Payments'));
+const AccountSettings = lazy(() => import('./modules/customer/AccountSettings'));
+const AddBankAccount = lazy(() => import('./modules/customer/AddBankAccount'));
+const AccountSummary = lazy(() => import('./modules/customer/AccountSummary'));
+const Help = lazy(() => import('./modules/customer/Help'));
+const KycDetails = lazy(() => import('./modules/customer/KycDetails'));
+const KYCDocuments = lazy(() => import('./modules/customer/KYCDocuments'));
+const KYCPending = lazy(() => import('./modules/customer/KYCPending'));
+const OrderConfirmation = lazy(() => import('./modules/customer/OrderConfirmation'));
+const OptionChain = lazy(() => import('./modules/customer/OptionChain'));
+const ChartView = lazy(() => import('./modules/customer/ChartView'));
+const OrderBook = lazy(() => import('./modules/customer/OrderBook'));
 
 // Broker Modules
-import BrokerLogin from './modules/broker/Login';
-import BrokerDashboard from './modules/broker/Dashboard';
-import BrokerClientList from './modules/broker/ClientList';
-import BrokerClientDetail from './modules/broker/ClientDetail';
-import BrokerFunds from './modules/broker/Funds';
-import BrokerManagement from './modules/broker/Management';
-import BrokerWithdrawalRequests from './modules/broker/WithdrawalRequests';
-import BrokerApprovals from './modules/broker/Approvals';
-import BrokerCncOrderApprovals from './modules/broker/CncOrderApprovals';
-import BrokerSettings from './modules/broker/Settings';
-import BrokerLogs from './modules/broker/Logs';
-import BrokerPaymentVerification from './modules/broker/PaymentVerification';
-import BrokerCreateClient from './modules/broker/CreateClient';
-import BrokerEditClient from './modules/broker/EditClient';
-import BrokerRecycleBin from './modules/broker/RecycleBin';
+const BrokerLogin = lazy(() => import('./modules/broker/Login'));
+const BrokerDashboard = lazy(() => import('./modules/broker/Dashboard'));
+const BrokerClientList = lazy(() => import('./modules/broker/ClientList'));
+const BrokerClientDetail = lazy(() => import('./modules/broker/ClientDetail'));
+const BrokerFunds = lazy(() => import('./modules/broker/Funds'));
+const BrokerManagement = lazy(() => import('./modules/broker/Management'));
+const BrokerWithdrawalRequests = lazy(() => import('./modules/broker/WithdrawalRequests'));
+const BrokerApprovals = lazy(() => import('./modules/broker/Approvals'));
+const BrokerCncOrderApprovals = lazy(() => import('./modules/broker/CncOrderApprovals'));
+const BrokerSettings = lazy(() => import('./modules/broker/Settings'));
+const BrokerLogs = lazy(() => import('./modules/broker/Logs'));
+const BrokerPaymentVerification = lazy(() => import('./modules/broker/PaymentVerification'));
+const BrokerCreateClient = lazy(() => import('./modules/broker/CreateClient'));
+const BrokerEditClient = lazy(() => import('./modules/broker/EditClient'));
+const BrokerRecycleBin = lazy(() => import('./modules/broker/RecycleBin'));
 
 // Admin Modules
-import AdminLogin from './modules/admin/Login';
-import AdminDashboard from './modules/admin/Dashboard';
-import AdminBrokers from './modules/admin/Brokers';
-import AdminCustomers from './modules/admin/Customers';
-import AdminKYC from './modules/admin/KYC';
-import AdminLogs from './modules/admin/Logs';
-import AdminAccessToken from './modules/admin/AccessToken';
-import AdminSettings from './modules/admin/Settings';
-import AdminReports from './modules/admin/Reports';
-import AdminWithdrawals from './modules/admin/Withdrawals';
-import AdminFunds from './modules/admin/Funds';
-
-// Auth
-import Login from './modules/auth/Login';
-import Signup from './modules/auth/Signup';
-import RegistrationStatus from './modules/auth/RegistrationStatus';
+const AdminLogin = lazy(() => import('./modules/admin/Login'));
+const AdminDashboard = lazy(() => import('./modules/admin/Dashboard'));
+const AdminBrokers = lazy(() => import('./modules/admin/Brokers'));
+const AdminCustomers = lazy(() => import('./modules/admin/Customers'));
+const AdminKYC = lazy(() => import('./modules/admin/KYC'));
+const AdminLogs = lazy(() => import('./modules/admin/Logs'));
+const AdminAccessToken = lazy(() => import('./modules/admin/AccessToken'));
+const AdminSettings = lazy(() => import('./modules/admin/Settings'));
+const AdminReports = lazy(() => import('./modules/admin/Reports'));
+const AdminWithdrawals = lazy(() => import('./modules/admin/Withdrawals'));
+const AdminFunds = lazy(() => import('./modules/admin/Funds'));
 
 const CUSTOMER_CFD_WARNING_REQUIRED_KEY = 'customer_cfd_warning_required';
 const CUSTOMER_REENTRY_REDIRECT_DONE_KEY = 'customer_reentry_redirect_done';
@@ -258,6 +258,7 @@ function App() {
             <AdminAuthProvider>
               <CustomerSessionReentryRedirect />
               <div className="App font-['Inter']">
+                <Suspense fallback={<AuthLoadingScreen />}>
                 <Routes>
                 {/* Auth Routes */}
                 <Route path="/" element={<LandingRoute />} />
@@ -343,6 +344,7 @@ function App() {
                 <Route path="/admin/funds" element={<RequireAdminAuth><AdminFunds /></RequireAdminAuth>} />
                 <Route path="*" element={<Navigate to="/" replace />} />
                 </Routes>
+                </Suspense>
               </div>
             </AdminAuthProvider>
           </BrokerAuthProvider>
