@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate, Outlet, useLocation } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import './App.css';
 
 // Context Providers
@@ -76,6 +76,7 @@ import Signup from './modules/auth/Signup';
 import RegistrationStatus from './modules/auth/RegistrationStatus';
 
 const CUSTOMER_CFD_WARNING_REQUIRED_KEY = 'customer_cfd_warning_required';
+const CUSTOMER_REENTRY_REDIRECT_DONE_KEY = 'customer_reentry_redirect_done';
 
 const AuthLoadingScreen = () => {
   return (
@@ -182,6 +183,58 @@ const GuestOnlyRoute = ({ children }) => {
   return children;
 };
 
+const CustomerSessionReentryRedirect = () => {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const {
+    isAuthenticated: customerAuthenticated,
+    user: customerUser,
+    loading: customerLoading,
+    sessionBoot,
+  } = useAuth();
+  const { isAuthenticated: brokerAuthenticated, loading: brokerLoading } = useBrokerAuth();
+  const { isAuthenticated: adminAuthenticated, loading: adminLoading } = useAdminAuth();
+
+  useEffect(() => {
+    if (customerLoading || brokerLoading || adminLoading) return;
+    if (!sessionBoot?.hydrated || !sessionBoot?.restored) return;
+    if (!customerAuthenticated || brokerAuthenticated || adminAuthenticated) return;
+
+    let alreadyRedirected = false;
+    try {
+      alreadyRedirected = sessionStorage.getItem(CUSTOMER_REENTRY_REDIRECT_DONE_KEY) === '1';
+    } catch {
+      alreadyRedirected = false;
+    }
+    if (alreadyRedirected) return;
+
+    const targetPath = customerUser?.kycStatus === 'verified' ? '/watchlist' : '/kyc-pending';
+    try {
+      sessionStorage.setItem(CUSTOMER_REENTRY_REDIRECT_DONE_KEY, '1');
+    } catch {
+      // No-op: session storage may be unavailable in private mode.
+    }
+
+    if (location.pathname !== targetPath) {
+      navigate(targetPath, { replace: true });
+    }
+  }, [
+    adminAuthenticated,
+    adminLoading,
+    brokerAuthenticated,
+    brokerLoading,
+    customerAuthenticated,
+    customerLoading,
+    customerUser?.kycStatus,
+    location.pathname,
+    navigate,
+    sessionBoot?.hydrated,
+    sessionBoot?.restored,
+  ]);
+
+  return null;
+};
+
 const RouteThemeEnforcer = () => {
   const { pathname } = useLocation();
   const { setForcedTheme } = useTheme();
@@ -203,6 +256,7 @@ function App() {
         <MarketDataProvider>
           <BrokerAuthProvider>
             <AdminAuthProvider>
+              <CustomerSessionReentryRedirect />
               <div className="App font-['Inter']">
                 <Routes>
                 {/* Auth Routes */}

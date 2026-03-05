@@ -1,6 +1,9 @@
 {
   "name": "One Capital",
   "short_name": "OneCapital",
+  "id": "/watchlist",
+  "start_url": "/watchlist",
+  "scope": "/",
   "icons": [
     {
       "src": "/android-chrome-192x192.png",

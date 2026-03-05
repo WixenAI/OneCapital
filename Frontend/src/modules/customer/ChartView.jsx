@@ -44,11 +44,6 @@ const formatDate = (date) => {
   return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
 };
 
-const formatDateTime = (date) => {
-  const d = date instanceof Date ? date : new Date(date);
-  return `${formatDate(d)} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
-};
-
 const getRangeForInterval = (intervalKey) => {
   const cfg = INTERVALS.find(i => i.key === intervalKey) || INTERVALS.find(i => i.key === DEFAULT_INTERVAL);
   const now = toIstPseudoDate();
@@ -74,6 +69,20 @@ const ChartView = () => {
   const instrumentToken = stock?.instrumentToken || stock?.instrument_token || null;
   const symbol = stock?.symbol || stock?.tradingsymbol || stock?.name || '';
   const exchange = stock?.exchange || stock?.segment || 'NSE';
+  const isIndexInstrument = useMemo(() => {
+    const segment = String(stock?.segment || '').toUpperCase();
+    const exchangeValue = String(stock?.exchange || '').toUpperCase();
+    return (
+      segment === 'INDICES' ||
+      segment === 'NSE_INDEX' ||
+      segment === 'BSE_INDEX' ||
+      segment.endsWith('_INDEX') ||
+      segment.endsWith('-INDEX') ||
+      exchangeValue === 'INDICES' ||
+      exchangeValue === 'NSE_INDEX' ||
+      exchangeValue === 'BSE_INDEX'
+    );
+  }, [stock]);
   const isOption = useMemo(() => {
     const segment = String(stock?.segment || stock?.exchange || '').toUpperCase();
     return segment.includes('OPT');
@@ -269,36 +278,38 @@ const ChartView = () => {
           </div>
         </div>
         <div className="flex items-center justify-end gap-2">
-          {isCustomerTradeAllowed ? (
-            <>
-              <button
-                type="button"
-                onClick={() => setOrderSheet({ open: true, side: 'BUY' })}
-                className="h-9 px-4 rounded-full bg-[#137fec] text-white text-xs font-semibold shadow-sm hover:bg-blue-600 transition-colors"
-              >
-                BUY
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (isOption) return;
-                  setOrderSheet({ open: true, side: 'SELL' });
-                }}
-                disabled={isOption}
-                className={`h-9 px-4 rounded-full text-xs font-semibold shadow-sm transition-colors ${
-                  isOption
-                    ? 'bg-gray-200 dark:bg-[#22352d] text-gray-400 dark:text-[#6f8b7f] cursor-not-allowed'
-                    : 'bg-red-500 text-white hover:bg-red-600'
-                }`}
-              >
-                {isOption && (
-                  <span className="material-symbols-outlined text-[14px] mr-1 align-[-1px]">lock</span>
-                )}
-                SELL
-              </button>
-            </>
-          ) : (
-            <span className="text-[11px] text-amber-700 dark:text-amber-300 font-medium">{marketClosedReason}</span>
+          {!isIndexInstrument && (
+            isCustomerTradeAllowed ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setOrderSheet({ open: true, side: 'BUY' })}
+                  className="h-9 px-4 rounded-full bg-[#137fec] text-white text-xs font-semibold shadow-sm hover:bg-blue-600 transition-colors"
+                >
+                  BUY
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (isOption) return;
+                    setOrderSheet({ open: true, side: 'SELL' });
+                  }}
+                  disabled={isOption}
+                  className={`h-9 px-4 rounded-full text-xs font-semibold shadow-sm transition-colors ${
+                    isOption
+                      ? 'bg-gray-200 dark:bg-[#22352d] text-gray-400 dark:text-[#6f8b7f] cursor-not-allowed'
+                      : 'bg-red-500 text-white hover:bg-red-600'
+                  }`}
+                >
+                  {isOption && (
+                    <span className="material-symbols-outlined text-[14px] mr-1 align-[-1px]">lock</span>
+                  )}
+                  SELL
+                </button>
+              </>
+            ) : (
+              <span className="text-[11px] text-amber-700 dark:text-amber-300 font-medium">{marketClosedReason}</span>
+            )
           )}
         </div>
       </header>
@@ -498,17 +509,19 @@ const ChartView = () => {
         </div>
       </main>
 
-      <OrderBottomSheet
-        isOpen={orderSheet.open}
-        side={orderSheet.side}
-        stock={stock}
-        ltpData={{ ltp: liveLtp, change: change ?? 0, changePercent: changePct ?? 0 }}
-        ticksRef={ticksRef}
-        tickUpdatedAtRef={tickUpdatedAtRef}
-        onClose={() => setOrderSheet({ open: false, side: 'BUY' })}
-        disableTrading={!isCustomerTradeAllowed}
-        disableReason={marketClosedReason}
-      />
+      {!isIndexInstrument && (
+        <OrderBottomSheet
+          isOpen={orderSheet.open}
+          side={orderSheet.side}
+          stock={stock}
+          ltpData={{ ltp: liveLtp, change: change ?? 0, changePercent: changePct ?? 0 }}
+          ticksRef={ticksRef}
+          tickUpdatedAtRef={tickUpdatedAtRef}
+          onClose={() => setOrderSheet({ open: false, side: 'BUY' })}
+          disableTrading={!isCustomerTradeAllowed}
+          disableReason={marketClosedReason}
+        />
+      )}
     </div>
   );
 };

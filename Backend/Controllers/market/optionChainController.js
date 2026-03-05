@@ -25,9 +25,50 @@ const dedupeUpper = (values = []) => {
     return result;
 };
 
+const isIndexSegment = (segment) => {
+    const normalized = toUpper(segment);
+    if (!normalized) return false;
+    return (
+        normalized === 'INDICES' ||
+        normalized === 'NSE_INDEX' ||
+        normalized === 'BSE_INDEX' ||
+        normalized.endsWith('_INDEX') ||
+        normalized.endsWith('-INDEX')
+    );
+};
+
+const resolvePreferredOptionSegment = ({
+    inputSegment,
+    resolvedSegment,
+    resolvedExchange,
+    underlyingName,
+} = {}) => {
+    if (inputSegment) {
+        return normalizeToOptionSegment(inputSegment);
+    }
+
+    if (isIndexSegment(resolvedSegment)) {
+        if (resolvedExchange) {
+            return normalizeToOptionSegment(resolvedExchange);
+        }
+        return getOptionSegment(underlyingName);
+    }
+
+    if (resolvedSegment) {
+        return normalizeToOptionSegment(resolvedSegment);
+    }
+
+    if (resolvedExchange) {
+        return normalizeToOptionSegment(resolvedExchange);
+    }
+
+    return getOptionSegment(underlyingName);
+};
+
 /**
  * Resolve the base underlying name from query params.
- * Accepts name, tradingsymbol, or instrument_token and returns { resolvedName, resolvedSegment }.
+ * Accepts name, tradingsymbol, or instrument_token and returns
+ * { resolvedName, resolvedSegment, resolvedExchange }.
  * This handles the case where a user clicks "Option Chain" on a futures instrument
  * like "GOLDM26MARFUT" — we need to extract the base name "GOLDM".
  */
@@ -40,7 +81,7 @@ async function resolveUnderlying(query) {
     // 1. Try resolving via instrument_token (most reliable)
     if (instrument_token) {
         doc = await Instrument.findOne({ instrument_token: String(instrument_token) })
-            .select('name segment tradingsymbol instrument_type expiry')
+            .select('name segment exchange tradingsymbol instrument_type expiry')
             .lean();
         if (doc?.name) {
             console.log(`[resolveUnderlying] Resolved via instrument_token ${instrument_token} → name: ${doc.name}, segment: ${doc.segment}`);
@@ -50,7 +91,7 @@ async function resolveUnderlying(query) {
     // 2. Try resolving via tradingsymbol (e.g., "GOLDM26MARFUT")
     if (!doc && tradingsymbol) {
         doc = await Instrument.findOne({ tradingsymbol: queryTradingsymbol })
-            .select('name segment tradingsymbol instrument_type expiry')
+            .select('name segment exchange tradingsymbol instrument_type expiry')
             .lean();
         if (doc?.name) {
             console.log(`[resolveUnderlying] Resolved via tradingsymbol ${tradingsymbol} → name: ${doc.name}, segment: ${doc.segment}`);
@@ -60,7 +101,7 @@ async function resolveUnderlying(query) {
     // 3. Check if the name itself might be a tradingsymbol (contains digits → likely a full symbol)
     if (!doc && name && /\d/.test(name)) {
         doc = await Instrument.findOne({ tradingsymbol: queryName })
-            .select('name segment tradingsymbol instrument_type expiry')
+            .select('name segment exchange tradingsymbol instrument_type expiry')
             .lean();
         if (doc?.name) {
             console.log(`[resolveUnderlying] Name "${name}" looks like tradingsymbol → resolved to: ${doc.name}`);
@@ -78,6 +119,7 @@ async function resolveUnderlying(query) {
     return {
         resolvedName,
         resolvedSegment: doc?.segment || null,
+        resolvedExchange: doc?.exchange || null,
         instrument: doc || null,
         nameCandidates,
     };
@@ -108,6 +150,7 @@ async function getOptionChain(req, res) {
         const {
             resolvedName: underlyingName,
             resolvedSegment,
+            resolvedExchange,
             nameCandidates,
         } = await resolveUnderlying({ name, tradingsymbol, instrument_token });
 
@@ -118,13 +161,22 @@ async function getOptionChain(req, res) {
             });
         }
 
-        console.log('[OptionChainController] Request:', { underlyingName, segment, resolvedSegment, expiry, tradingsymbol, instrument_token });
+        console.log('[OptionChainController] Request:', {
+            underlyingName,
+            segment,
+            resolvedSegment,
+            resolvedExchange,
+            expiry,
+            tradingsymbol,
+            instrument_token,
+        });
 
-        const preferredSegment = segment
-            ? normalizeToOptionSegment(segment)
-            : resolvedSegment
-                ? normalizeToOptionSegment(resolvedSegment)
-                : getOptionSegment(underlyingName);
+        const preferredSegment = resolvePreferredOptionSegment({
+            inputSegment: segment,
+            resolvedSegment,
+            resolvedExchange,
+            underlyingName,
+        });
         const optionSegmentCandidates = getOptionSegmentCandidates({
             segment: preferredSegment,
             underlyingName,
@@ -233,6 +285,7 @@ async function getExpiryList(req, res) {
         const {
             resolvedName: underlyingName,
             resolvedSegment,
+            resolvedExchange,
             nameCandidates,
         } = await resolveUnderlying({ name, tradingsymbol, instrument_token });
 
@@ -243,11 +296,12 @@ async function getExpiryList(req, res) {
             });
         }
 
-        const preferredSegment = segment
-            ? normalizeToOptionSegment(segment)
-            : resolvedSegment
-                ? normalizeToOptionSegment(resolvedSegment)
-                : getOptionSegment(underlyingName);
+        const preferredSegment = resolvePreferredOptionSegment({
+            inputSegment: segment,
+            resolvedSegment,
+            resolvedExchange,
+            underlyingName,
+        });
         const optionSegmentCandidates = getOptionSegmentCandidates({
             segment: preferredSegment,
             underlyingName,

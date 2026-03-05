@@ -22,6 +22,7 @@ import {
 import { logFailedOrderAttempt } from '../../Utils/OrderAttemptLogger.js';
 import { getStandardMarketStatus } from '../../Utils/tradingSession.js';
 import { releaseMarginOnClose } from '../../services/marginLifecycle.js';
+import { syncGlobalWatchlistTokens } from '../../sockets/io.js';
 
 const toNumber = (value, fallback = 0) => {
   const n = Number(value);
@@ -913,6 +914,68 @@ const updateWatchlist = asyncHandler(async (req, res) => {
   const desiredName = String(listName || name || DEFAULT_LIST).trim();
   const effectiveName = desiredName || DEFAULT_LIST;
 
+  if (action === 'delete_list') {
+    const rawTargetName = String(listName || name || '').trim();
+    if (!rawTargetName) {
+      return res.status(400).json({ success: false, message: 'Watchlist name is required.' });
+    }
+
+    const targetName = rawTargetName === 'Default' ? DEFAULT_LIST : rawTargetName;
+    if (targetName === DEFAULT_LIST) {
+      return res.status(400).json({ success: false, message: `${DEFAULT_LIST} cannot be deleted.` });
+    }
+
+    const listToDelete = await UserWatchlistModel.findOne({
+      customer_id_str: customerIdStr,
+      broker_id_str: brokerIdStr,
+      name: targetName,
+    });
+
+    if (!listToDelete) {
+      return res.status(404).json({ success: false, message: 'Watchlist not found.' });
+    }
+
+    await UserWatchlistModel.deleteOne({ _id: listToDelete._id });
+
+    let updatedLists = await UserWatchlistModel.find({
+      customer_id_str: customerIdStr,
+      broker_id_str: brokerIdStr,
+    })
+      .sort({ createdAt: 1 })
+      .lean();
+
+    if (!updatedLists.length) {
+      const createdDefault = await UserWatchlistModel.create({
+        customer_id_str: customerIdStr,
+        broker_id_str: brokerIdStr,
+        name: DEFAULT_LIST,
+        instruments: [],
+      });
+      updatedLists = [createdDefault.toObject()];
+    }
+
+    syncGlobalWatchlistTokens().catch((err) => {
+      console.error('[GlobalRetain] Mutation sync failed:', err.message);
+    });
+
+    const normalizedLists = updatedLists.map((list) => ({
+      id: list._id,
+      name: list.name === 'Default' ? DEFAULT_LIST : list.name,
+      instruments: list.instruments || [],
+    }));
+
+    const defaultList = normalizedLists.find((list) => list.name === DEFAULT_LIST);
+    const activeList = defaultList || normalizedLists[0] || { name: DEFAULT_LIST, instruments: [] };
+
+    return res.status(200).json({
+      success: true,
+      message: 'Watchlist deleted.',
+      watchlist: activeList.instruments || [],
+      watchlists: normalizedLists,
+      active: activeList.name || DEFAULT_LIST,
+    });
+  }
+
   if (action === 'create') {
     const existingLists = await UserWatchlistModel.find({
       customer_id_str: customerIdStr,
@@ -1094,6 +1157,11 @@ const updateWatchlist = asyncHandler(async (req, res) => {
   })
     .sort({ createdAt: 1 })
     .lean();
+
+  // Sync global token retention after watchlist change
+  syncGlobalWatchlistTokens().catch((err) => {
+    console.error('[GlobalRetain] Mutation sync failed:', err.message);
+  });
 
   res.status(200).json({
     success: true,

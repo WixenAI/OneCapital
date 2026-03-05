@@ -4,3 +4,8 @@
 #root {
   min-height: 100vh;
 }
+
+/* Smooth tick transitions for live price elements */
+.tabular-nums {
+  transition: opacity 120ms ease-out;
+}

@@ -302,6 +302,11 @@ const customerApi = {
     return response.data;
   },
 
+  deleteWatchlist: async (name) => {
+    const response = await api.delete(`/customer/watchlist/list/${encodeURIComponent(name)}`);
+    return response.data;
+  },
+
   /**
    * Delete symbol from watchlist
    * @param {string} symbol - Symbol to remove

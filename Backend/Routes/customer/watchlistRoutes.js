@@ -35,6 +35,18 @@ router.post('/watchlist', updateWatchlist);
 router.put('/watchlist', updateWatchlist);
 
 /**
+ * @route   DELETE /api/customer/watchlist/list/:name
+ * @desc    Delete a watchlist by name
+ * @access  Private (Customer only)
+ */
+router.delete('/watchlist/list/:name', (req, res, next) => {
+  req.body = req.body || {};
+  req.body.action = 'delete_list';
+  req.body.name = decodeURIComponent(req.params.name);
+  updateWatchlist(req, res, next);
+});
+
+/**
  * @route   DELETE /api/customer/watchlist/:symbol
  * @desc    Remove stock from watchlist
  * @access  Private (Customer only)

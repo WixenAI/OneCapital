@@ -30,7 +30,7 @@ module.exports = {
     // Never scale above 1 instance.
     // ─────────────────────────────────────────────────────────────────────────
     {
-      name: 'wolf-worker',
+      name: 'OC-Worker',
       script: 'index.js',
       instances: 1,
       exec_mode: 'fork',          // fork = independent process, not cluster
@@ -57,9 +57,9 @@ module.exports = {
     // Safe to scale instances up. Clients always connect here.
     // ─────────────────────────────────────────────────────────────────────────
     {
-      name: 'wolf-api',
+      name: 'OC-Api',
       script: 'index.js',
-      instances: 2,               // 2 for local dev; increase on Render as needed
+      instances: 4,               // 2 for local dev; increase on Render as needed
       exec_mode: 'cluster',       // cluster = PM2 master shares port 8080
       watch: false,
       autorestart: true,

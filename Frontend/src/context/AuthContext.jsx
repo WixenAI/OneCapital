@@ -8,6 +8,7 @@ import { getStoredUser, clearTokens, setStoredUser } from '../api/index';
 
 const AuthContext = createContext(null);
 const CUSTOMER_CFD_WARNING_REQUIRED_KEY = 'customer_cfd_warning_required';
+const CUSTOMER_REENTRY_REDIRECT_DONE_KEY = 'customer_reentry_redirect_done';
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
@@ -21,11 +22,18 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [sessionBoot, setSessionBoot] = useState({ hydrated: false, restored: false });
 
   // Initialize auth state from localStorage
   useEffect(() => {
     const initAuth = async () => {
       try {
+        try {
+          sessionStorage.removeItem(CUSTOMER_REENTRY_REDIRECT_DONE_KEY);
+        } catch {
+          // No-op: session storage may be unavailable in private mode.
+        }
+
         const storedUser = getStoredUser();
         const storedRole = storedUser?.role;
         const isCustomerSession = !storedRole || storedRole === 'customer';
@@ -38,17 +46,21 @@ export const AuthProvider = ({ children }) => {
             const resolvedUser = { ...(profile.user || profile), role: 'customer' };
             setUser(resolvedUser);
             setStoredUser(resolvedUser);
+            setSessionBoot({ hydrated: true, restored: true });
           } catch {
             // Token expired or invalid
             clearTokens();
             setUser(null);
+            setSessionBoot({ hydrated: true, restored: false });
           }
         } else {
           // Another role session (broker/admin) should not be treated as customer auth.
           setUser(null);
+          setSessionBoot({ hydrated: true, restored: false });
         }
       } catch (err) {
         console.error('Auth init error:', err);
+        setSessionBoot({ hydrated: true, restored: false });
       } finally {
         setLoading(false);
       }
@@ -68,8 +80,10 @@ export const AuthProvider = ({ children }) => {
       const resolvedUser = { ...(response.user || {}), role: 'customer' };
       setUser(resolvedUser);
       setStoredUser(resolvedUser);
+      setSessionBoot({ hydrated: true, restored: false });
       try {
         sessionStorage.setItem(CUSTOMER_CFD_WARNING_REQUIRED_KEY, '1');
+        sessionStorage.removeItem(CUSTOMER_REENTRY_REDIRECT_DONE_KEY);
       } catch {
         // No-op: session storage may be unavailable in private mode.
       }
@@ -113,10 +127,12 @@ export const AuthProvider = ({ children }) => {
     } finally {
       try {
         sessionStorage.removeItem(CUSTOMER_CFD_WARNING_REQUIRED_KEY);
+        sessionStorage.removeItem(CUSTOMER_REENTRY_REDIRECT_DONE_KEY);
       } catch {
         // No-op: session storage may be unavailable in private mode.
       }
       setUser(null);
+      setSessionBoot({ hydrated: true, restored: false });
       setLoading(false);
     }
   }, []);
@@ -171,6 +187,7 @@ export const AuthProvider = ({ children }) => {
     user,
     loading,
     error,
+    sessionBoot,
     isAuthenticated: !!user,
     login,
     signup,

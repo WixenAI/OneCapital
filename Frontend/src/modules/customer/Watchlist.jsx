@@ -51,6 +51,13 @@ const getInstrumentIdentityKey = (item) => {
 };
 
 const DEFAULT_WATCHLIST_TRACE_LIMIT = 120;
+const WATCHLIST_TAB_LONG_PRESS_MS = 550;
+const WATCHLIST_TAB_LONG_PRESS_MOVE_PX = 12;
+const PRIMARY_INDEX_CONFIG = [
+  { token: '256265', names: ['NIFTY 50'] },
+  { token: '260105', names: ['NIFTY BANK', 'BANKNIFTY'] },
+  { token: '265', names: ['SENSEX'] },
+];
 
 const readWatchlistTraceEnabled = () => {
   if (import.meta.env.VITE_WATCHLIST_RENDER_TRACE === 'false') return false;
@@ -107,10 +114,13 @@ const Watchlist = () => {
 
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState('Watchlist 1');
+  const [activeIndexToken, setActiveIndexToken] = useState(null);
   const [selectedStock, setSelectedStock] = useState(null);
-  const [showMarketDepth, setShowMarketDepth] = useState(false);
+  const [marketDepthSheet, setMarketDepthSheet] = useState({ open: false, stock: null });
   const [orderSheet, setOrderSheet] = useState({ open: false, side: 'BUY', stock: null, ltpData: null });
   const [loading, setLoading] = useState(true);
+  const [pendingDeleteTab, setPendingDeleteTab] = useState(null);
+  const [isDeletingWatchlist, setIsDeletingWatchlist] = useState(false);
 
   const navigate = useNavigate();
   const { user: authUser } = useAuth();
@@ -143,7 +153,8 @@ const Watchlist = () => {
   const instrumentResolveInFlightRef = useRef(new Map());
   const stocksRef = useRef([]);
   const indexesRef = useRef([]);
-  const subscribedRef = useRef(new Set());
+  const subscribedFullRef = useRef(new Set());
+  const subscribedQuoteRef = useRef(new Set());
   const hasConnectedOnceRef = useRef(false);
 
   // Search states
@@ -161,6 +172,9 @@ const Watchlist = () => {
   const watchlistTraceCountRef = useRef(0);
   const watchlistLastSeqByTokenRef = useRef(new Map());
   const watchlistPendingRenderRef = useRef(null);
+  const tabLongPressTimerRef = useRef(null);
+  const tabLongPressStateRef = useRef({ tab: null, startX: 0, startY: 0, triggered: false });
+  const suppressTabClickRef = useRef(null);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -180,7 +194,7 @@ const Watchlist = () => {
   }, [indexInstruments]);
 
   useEffect(() => {
-    setShowMarketDepth(false);
+    setMarketDepthSheet({ open: false, stock: null });
   }, [selectedStock]);
 
   useEffect(() => {
@@ -201,6 +215,16 @@ const Watchlist = () => {
       `[WatchlistTrace] active. limit=${watchlistTraceLimitRef.current}, tokenFilter=${filterLabel}`
     );
   }, []);
+
+  const clearTabLongPress = useCallback(() => {
+    if (tabLongPressTimerRef.current) {
+      window.clearTimeout(tabLongPressTimerRef.current);
+      tabLongPressTimerRef.current = null;
+    }
+    tabLongPressStateRef.current = { tab: null, startX: 0, startY: 0, triggered: false };
+  }, []);
+
+  useEffect(() => () => clearTabLongPress(), [clearTabLongPress]);
 
   const shouldTraceToken = useCallback((tokenKey) => {
     const filter = watchlistTraceTokensRef.current;
@@ -223,6 +247,53 @@ const Watchlist = () => {
     if (value == null || Number.isNaN(Number(value))) return '--';
     return Number(value).toLocaleString('en-IN', { minimumFractionDigits: 2 });
   };
+
+  const formatIndexNumber = (value) => {
+    if (value == null || Number.isNaN(Number(value))) return '--';
+    return Number(value).toLocaleString('en-IN', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+  };
+
+  const formatIndexSignedNumber = (value) => {
+    if (value == null || Number.isNaN(Number(value))) return '--';
+    const numeric = Number(value);
+    const abs = Math.abs(numeric).toLocaleString('en-IN', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+    if (numeric === 0) return abs;
+    return `${numeric > 0 ? '+' : '-'}${abs}`;
+  };
+
+  const selectPrimaryIndexes = useCallback((items) => {
+    const list = Array.isArray(items) ? items : [];
+    const selected = [];
+    const selectedTokens = new Set();
+
+    const getToken = (item) => String(item?.instrument_token || item?.instrumentToken || '').trim();
+    const getName = (item) => String(item?.tradingsymbol || item?.name || '').trim().toUpperCase();
+    const pushUnique = (item) => {
+      if (!item) return;
+      const token = getToken(item);
+      if (!token || selectedTokens.has(token)) return;
+      selected.push(item);
+      selectedTokens.add(token);
+    };
+
+    PRIMARY_INDEX_CONFIG.forEach(({ token, names }) => {
+      const byToken = list.find((item) => getToken(item) === token);
+      if (byToken) {
+        pushUnique(byToken);
+        return;
+      }
+      const byName = list.find((item) => names.includes(getName(item)));
+      pushUnique(byName);
+    });
+
+    return selected;
+  }, []);
 
   const buildResolveKey = (item) => {
     const symbol = String(
@@ -364,6 +435,11 @@ const Watchlist = () => {
     };
   }, [ticksRef]);
 
+  const getMarketDepthToken = useCallback(
+    (item) => String(item?.instrumentToken || item?.instrument_token || '').trim(),
+    []
+  );
+
   const getOhlcData = useCallback((stock) => {
     if (!stock) return { open: null, high: null, close: null };
     const token = String(stock.instrumentToken || stock.instrument_token || '');
@@ -389,9 +465,8 @@ const Watchlist = () => {
     if (!depth || !depth.buy || !depth.sell) {
       return (
         <div className="flex flex-col items-center justify-center p-4 text-[#617589] text-xs">
-          <span className="material-symbols-outlined text-[20px] mb-1 text-[#8aa0b5]">layers</span>
-          <p>Market Depth Not Available</p>
-          <p className="text-[10px] text-[#9aa6b2]">Subscribe to full data mode</p>
+          <span className="inline-block h-5 w-5 rounded-full border-2 border-[#8aa0b5] border-t-transparent animate-spin mb-2" />
+          <p className="text-[11px] text-[#9aa6b2]">Loading market depth...</p>
         </div>
       );
     }
@@ -518,7 +593,7 @@ const Watchlist = () => {
       if (cacheAgeMs < CACHE_TTL_MS) {
         if (cachedWatchlists && cachedIndexes) {
           const cachedPayload = JSON.parse(cachedWatchlists);
-          const cachedIndexItems = JSON.parse(cachedIndexes);
+          const cachedIndexItems = selectPrimaryIndexes(JSON.parse(cachedIndexes));
           const mergedWatchlists = cachedPayload?.lists || {};
           const order = cachedPayload?.order || Object.keys(mergedWatchlists);
           const nextActive = mergedWatchlists[preferredTab]
@@ -536,7 +611,7 @@ const Watchlist = () => {
           }
         } else if (cachedWatchlist && cachedIndexes) {
           const cachedWatchlistItems = JSON.parse(cachedWatchlist);
-          const cachedIndexItems = JSON.parse(cachedIndexes);
+          const cachedIndexItems = selectPrimaryIndexes(JSON.parse(cachedIndexes));
           const mergedWatchlists = { 'Watchlist 1': cachedWatchlistItems };
           const nextActive = mergedWatchlists[preferredTab] ? preferredTab : 'Watchlist 1';
           setWatchlists(mergedWatchlists);
@@ -569,12 +644,7 @@ const Watchlist = () => {
         ? watchlistResponse.watchlists
         : null;
 
-      const importantIndexes = indexItems.filter((item) =>
-        (item.tradingsymbol || '').includes('NIFTY 50') ||
-        (item.tradingsymbol || '').includes('SENSEX') ||
-        (item.name || '').includes('NIFTY 50') ||
-        (item.name || '').includes('SENSEX')
-      );
+      const importantIndexes = selectPrimaryIndexes(indexItems);
 
       setIndexInstruments(importantIndexes);
 
@@ -619,7 +689,7 @@ const Watchlist = () => {
         setLoading(false);
       }
     }
-  }, [CACHE_TTL_MS, WATCHLIST_REVALIDATE_AFTER_MS, formatWatchlistItems]);
+  }, [CACHE_TTL_MS, WATCHLIST_REVALIDATE_AFTER_MS, formatWatchlistItems, selectPrimaryIndexes]);
 
   useEffect(() => {
     fetchWatchlist();
@@ -854,13 +924,30 @@ const Watchlist = () => {
     return () => cancelAnimationFrame(animationFrameId);
   }, [ticksRef]);
 
-  const subscriptionTokens = useMemo(() => {
-    const tokens = [
-      ...stocks.map((s) => s.instrumentToken || s.instrument_token).filter(Boolean),
-      ...indexInstruments.map((i) => i.instrument_token || i.instrumentToken).filter(Boolean),
-    ];
-    return Array.from(new Set(tokens.map((token) => String(token))));
-  }, [stocks, indexInstruments]);
+  // Subscribe to union of ALL watchlist tabs (not just active tab)
+  // to eliminate subscribe/unsubscribe churn on tab switch.
+  const stockSubscriptionTokens = useMemo(() => {
+    const allTokens = new Set();
+    Object.values(watchlists).forEach((list) => {
+      list.forEach((s) => {
+        const t = s.instrumentToken || s.instrument_token;
+        if (t) allTokens.add(String(t));
+      });
+    });
+    return Array.from(allTokens);
+  }, [watchlists]);
+
+  const indexSubscriptionTokens = useMemo(
+    () => Array.from(new Set(
+      indexInstruments
+        .map((i) => i.instrument_token || i.instrumentToken)
+        .filter(Boolean)
+        .map((token) => String(token))
+    )),
+    [indexInstruments]
+  );
+
+  const hasAnySubscriptionTokens = stockSubscriptionTokens.length > 0 || indexSubscriptionTokens.length > 0;
 
   const fetchSnapshots = useCallback(async (items) => {
     if (!items.length) return;
@@ -884,7 +971,10 @@ const Watchlist = () => {
       hasConnectedOnceRef.current = true;
       return;
     }
-    const subscribedTokens = Array.from(subscribedRef.current).map((token) => ({
+    const subscribedTokens = Array.from(new Set([
+      ...subscribedFullRef.current,
+      ...subscribedQuoteRef.current,
+    ])).map((token) => ({
       instrument_token: token,
     }));
     if (subscribedTokens.length > 0) {
@@ -893,8 +983,8 @@ const Watchlist = () => {
   }, [fetchSnapshots, isConnected]);
 
   useEffect(() => {
-    const nextSet = new Set(subscriptionTokens);
-    const prevSet = subscribedRef.current;
+    const nextSet = new Set(stockSubscriptionTokens);
+    const prevSet = subscribedFullRef.current;
     const toSubscribe = [];
     const toUnsubscribe = [];
 
@@ -919,21 +1009,69 @@ const Watchlist = () => {
       unsubscribe(toUnsubscribe, 'full');
     }
 
-    if (nextSet.size === 0 && Object.keys(pricesRef.current).length > 0) {
+    subscribedFullRef.current = nextSet;
+  }, [fetchSnapshots, stockSubscriptionTokens, subscribe, unsubscribe]);
+
+  useEffect(() => {
+    const nextSet = new Set(indexSubscriptionTokens);
+    const prevSet = subscribedQuoteRef.current;
+    const toSubscribe = [];
+    const toUnsubscribe = [];
+
+    nextSet.forEach((token) => {
+      if (!prevSet.has(token)) {
+        toSubscribe.push({ instrument_token: token });
+      }
+    });
+
+    prevSet.forEach((token) => {
+      if (!nextSet.has(token)) {
+        toUnsubscribe.push({ instrument_token: token });
+      }
+    });
+
+    if (toSubscribe.length > 0) {
+      subscribe(toSubscribe, 'quote');
+      fetchSnapshots(toSubscribe);
+    }
+
+    if (toUnsubscribe.length > 0) {
+      unsubscribe(toUnsubscribe, 'quote');
+    }
+
+    subscribedQuoteRef.current = nextSet;
+  }, [fetchSnapshots, indexSubscriptionTokens, subscribe, unsubscribe]);
+
+  useEffect(() => {
+    if (!hasAnySubscriptionTokens && Object.keys(pricesRef.current).length > 0) {
       pricesRef.current = {};
       setPrices({});
     }
+  }, [hasAnySubscriptionTokens]);
 
-    subscribedRef.current = nextSet;
-  }, [fetchSnapshots, subscribe, subscriptionTokens, unsubscribe]);
+  useEffect(() => {
+    if (!marketDepthSheet.open || !marketDepthSheet.stock) return undefined;
+    const token = getMarketDepthToken(marketDepthSheet.stock);
+    if (!token) return undefined;
+    // Stocks are already subscribed in full mode — just fetch snapshots for immediate data.
+    const payload = [{ instrument_token: token }];
+    fetchSnapshots(payload);
+    return undefined;
+  }, [fetchSnapshots, getMarketDepthToken, marketDepthSheet.open, marketDepthSheet.stock]);
 
   useEffect(() => {
     return () => {
-      const tokens = Array.from(subscribedRef.current).map((token) => ({
+      const fullTokens = Array.from(subscribedFullRef.current).map((token) => ({
         instrument_token: token,
       }));
-      if (tokens.length > 0) {
-        unsubscribe(tokens, 'full');
+      const quoteTokens = Array.from(subscribedQuoteRef.current).map((token) => ({
+        instrument_token: token,
+      }));
+      if (fullTokens.length > 0) {
+        unsubscribe(fullTokens, 'full');
+      }
+      if (quoteTokens.length > 0) {
+        unsubscribe(quoteTokens, 'quote');
       }
     };
   }, [unsubscribe]);
@@ -1094,14 +1232,77 @@ const Watchlist = () => {
     return indexInstruments.map((item) => {
       const token = String(item.instrument_token || item.instrumentToken);
       const quote = prices[token] || {};
+      const tick = ticksRef.current?.get(token) || {};
+      const snapshot = snapshotsRef.current[token] || {};
+      const combined = { ...snapshot, ...tick };
+      const close = combined.close ?? null;
+      const ltp = quote.ltp ?? combined.ltp ?? null;
+      const priceChange = combined.netChange
+        ?? quote.change
+        ?? (ltp != null && close != null ? ltp - close : null);
+      const changePercent = combined.percentChange
+        ?? quote.changePercent
+        ?? (priceChange != null && close ? (priceChange / close) * 100 : null);
+
       return {
+        token,
         name: item.tradingsymbol || item.name,
-        value: quote.ltp,
-        change: quote.change,
-        changePercent: quote.changePercent,
+        symbol: item.tradingsymbol || item.name,
+        exchange: item.exchange || 'NSE',
+        segment: item.segment || 'INDICES',
+        value: ltp,
+        ltp,
+        open: combined.open ?? null,
+        high: combined.high ?? null,
+        low: combined.low ?? null,
+        close,
+        priceChange,
+        changePercent,
       };
     });
-  }, [indexInstruments, prices]);
+  }, [indexInstruments, prices, ticksRef]);
+
+  const activeIndexCard = useMemo(
+    () => indexCards.find((card) => card.token === activeIndexToken) || null,
+    [activeIndexToken, indexCards]
+  );
+  const activeIndexNavigationStock = useMemo(() => {
+    if (!activeIndexCard) return null;
+    const symbol = activeIndexCard.symbol || activeIndexCard.name;
+    return {
+      id: activeIndexCard.token,
+      symbol,
+      tradingsymbol: symbol,
+      name: activeIndexCard.name || symbol,
+      exchange: activeIndexCard.exchange || 'NSE',
+      segment: activeIndexCard.segment || 'INDICES',
+      instrumentToken: activeIndexCard.token,
+      instrument_token: activeIndexCard.token,
+    };
+  }, [activeIndexCard]);
+  const activeIndexLtpData = useMemo(() => {
+    if (!activeIndexCard) return null;
+    return {
+      ltp: activeIndexCard.ltp ?? null,
+      change: activeIndexCard.priceChange ?? null,
+      changePercent: activeIndexCard.changePercent ?? null,
+    };
+  }, [activeIndexCard]);
+
+  useEffect(() => {
+    if (!activeIndexToken) return;
+    const stillExists = indexCards.some((card) => card.token === activeIndexToken);
+    if (!stillExists) setActiveIndexToken(null);
+  }, [activeIndexToken, indexCards]);
+
+  useEffect(() => {
+    if (!activeIndexToken) return undefined;
+    const handleEscape = (event) => {
+      if (event.key === 'Escape') setActiveIndexToken(null);
+    };
+    window.addEventListener('keydown', handleEscape);
+    return () => window.removeEventListener('keydown', handleEscape);
+  }, [activeIndexToken]);
 
   // Remove stock from watchlist
   const handleRemoveStock = async (stockToRemove) => {
@@ -1119,6 +1320,11 @@ const Watchlist = () => {
       const mergedWatchlists = { ...watchlists, [activeTab]: updated };
       if (selectedStock && getInstrumentIdentityKey(selectedStock) === identityKey) {
         setSelectedStock(null);
+      }
+      const removedToken = getMarketDepthToken(stockToRemove);
+      const depthToken = getMarketDepthToken(marketDepthSheet.stock);
+      if (removedToken && depthToken && removedToken === depthToken) {
+        setMarketDepthSheet({ open: false, stock: null });
       }
       setWatchlists(mergedWatchlists);
       setStocks(updated);
@@ -1146,6 +1352,22 @@ const Watchlist = () => {
   const handleStockClick = (stock) => {
     setSelectedStock(selectedStock?.id === stock.id ? null : stock);
   };
+
+  const closeMarketDepthSheet = useCallback(() => {
+    setMarketDepthSheet({ open: false, stock: null });
+  }, []);
+
+  const handleToggleMarketDepth = useCallback((stock) => {
+    const token = getMarketDepthToken(stock);
+    if (!token) return;
+    setMarketDepthSheet((prev) => {
+      const prevToken = getMarketDepthToken(prev.stock);
+      if (prev.open && prevToken === token) {
+        return { open: false, stock: null };
+      }
+      return { open: true, stock };
+    });
+  }, [getMarketDepthToken]);
 
   const openOrderSheet = (side, stock, ltpData) => {
     if (!isCustomerTradeAllowed) return;
@@ -1230,6 +1452,151 @@ const Watchlist = () => {
     }
   };
 
+  const deleteWatchlistByName = useCallback(async (tabName) => {
+    if (!tabName || tabName === 'Watchlist 1') return;
+
+    try {
+      const response = await customerApi.deleteWatchlist(tabName);
+      const apiWatchlists = Array.isArray(response?.watchlists) ? response.watchlists : null;
+
+      let mergedWatchlists = { ...watchlists };
+      let updatedOrder = watchlistTabs.filter((name) => name !== tabName);
+
+      if (apiWatchlists) {
+        mergedWatchlists = {};
+        updatedOrder = [];
+        const formattedLists = await Promise.all(
+          apiWatchlists.map(async (list) => {
+            const items = await formatWatchlistItems(list.instruments || []);
+            return { name: list.name || 'Watchlist 1', items };
+          })
+        );
+
+        formattedLists.forEach((list) => {
+          mergedWatchlists[list.name] = list.items;
+          updatedOrder.push(list.name);
+        });
+      } else {
+        delete mergedWatchlists[tabName];
+      }
+
+      if (!updatedOrder.length) {
+        updatedOrder = ['Watchlist 1'];
+      }
+      if (!mergedWatchlists['Watchlist 1']) {
+        mergedWatchlists['Watchlist 1'] = [];
+      }
+      if (!updatedOrder.includes('Watchlist 1')) {
+        updatedOrder = ['Watchlist 1', ...updatedOrder];
+      }
+
+      const nextActive = activeTab === tabName
+        ? (mergedWatchlists['Watchlist 1'] ? 'Watchlist 1' : updatedOrder[0] || 'Watchlist 1')
+        : (mergedWatchlists[activeTab] ? activeTab : (updatedOrder[0] || 'Watchlist 1'));
+
+      const nextStocks = mergedWatchlists[nextActive] || [];
+
+      setWatchlists(mergedWatchlists);
+      setWatchlistOrder(updatedOrder);
+      setActiveTab(nextActive);
+      setStocks(nextStocks);
+      setSelectedStock(null);
+      setMarketDepthSheet({ open: false, stock: null });
+      sessionStorage.setItem('watchlists_cache', JSON.stringify({ order: updatedOrder, lists: mergedWatchlists }));
+      sessionStorage.setItem('watchlist_cache_time', Date.now().toString());
+    } catch (err) {
+      console.error('Failed to delete watchlist:', err);
+      throw err;
+    }
+  }, [activeTab, formatWatchlistItems, watchlistTabs, watchlists]);
+
+  const getPointerCoordinates = (event) => ({
+    x: Number(event?.clientX ?? 0),
+    y: Number(event?.clientY ?? 0),
+  });
+
+  const handleTabPointerDown = useCallback((tabName, event) => {
+    if (tabName === 'Watchlist 1') return;
+    if (isDeletingWatchlist) return;
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+
+    clearTabLongPress();
+    const { x, y } = getPointerCoordinates(event);
+    tabLongPressStateRef.current = { tab: tabName, startX: x, startY: y, triggered: false };
+
+    tabLongPressTimerRef.current = window.setTimeout(() => {
+      tabLongPressStateRef.current.triggered = true;
+      suppressTabClickRef.current = tabName;
+      setPendingDeleteTab(tabName);
+      if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+        navigator.vibrate(10);
+      }
+    }, WATCHLIST_TAB_LONG_PRESS_MS);
+  }, [clearTabLongPress, isDeletingWatchlist]);
+
+  const handleTabPointerMove = useCallback((tabName, event) => {
+    const state = tabLongPressStateRef.current;
+    if (!tabLongPressTimerRef.current) return;
+    if (state.tab !== tabName) return;
+
+    const { x, y } = getPointerCoordinates(event);
+    const movedX = Math.abs(x - state.startX);
+    const movedY = Math.abs(y - state.startY);
+    if (movedX > WATCHLIST_TAB_LONG_PRESS_MOVE_PX || movedY > WATCHLIST_TAB_LONG_PRESS_MOVE_PX) {
+      clearTabLongPress();
+    }
+  }, [clearTabLongPress]);
+
+  const handleTabPointerUp = useCallback((tabName, event) => {
+    const state = tabLongPressStateRef.current;
+    if (state.tab !== tabName) return;
+
+    const wasTriggered = state.triggered;
+    clearTabLongPress();
+    if (wasTriggered) {
+      suppressTabClickRef.current = tabName;
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }, [clearTabLongPress]);
+
+  const handleTabPointerCancel = useCallback((tabName) => {
+    if (tabLongPressStateRef.current.tab !== tabName) return;
+    clearTabLongPress();
+  }, [clearTabLongPress]);
+
+  const handleTabClick = useCallback((tabName) => {
+    if (suppressTabClickRef.current === tabName) {
+      suppressTabClickRef.current = null;
+      return;
+    }
+    setActiveTab(tabName);
+  }, []);
+
+  const handleTabContextMenu = useCallback((tabName, event) => {
+    if (tabName === 'Watchlist 1') return;
+    event.preventDefault();
+    event.stopPropagation();
+    suppressTabClickRef.current = tabName;
+    setPendingDeleteTab(tabName);
+  }, []);
+
+  const handleConfirmDeleteWatchlist = useCallback(async () => {
+    if (!pendingDeleteTab || pendingDeleteTab === 'Watchlist 1' || isDeletingWatchlist) return;
+    setIsDeletingWatchlist(true);
+    try {
+      await deleteWatchlistByName(pendingDeleteTab);
+      setPendingDeleteTab(null);
+    } finally {
+      setIsDeletingWatchlist(false);
+    }
+  }, [deleteWatchlistByName, isDeletingWatchlist, pendingDeleteTab]);
+
+  const handleCancelDeleteWatchlist = useCallback(() => {
+    if (isDeletingWatchlist) return;
+    setPendingDeleteTab(null);
+  }, [isDeletingWatchlist]);
+
   return (
     <div className="relative flex min-h-screen min-h-[100dvh] w-full flex-col bg-[#f6f7f8] dark:bg-[#050806] text-[#111418] dark:text-[#e8f3ee] overflow-x-hidden">
       {/* Sticky Header */}
@@ -1283,20 +1650,36 @@ const Watchlist = () => {
             </>
           ) : (
             indexCards.map((index) => {
-              const isPositive = index.change >= 0;
+              const isPositive = (index.priceChange ?? 0) >= 0;
+              const isActive = activeIndexToken === index.token;
               return (
-                <div key={index.name} className="flex min-w-[120px] sm:min-w-[140px] flex-1 flex-col justify-center gap-0.5 sm:gap-1 rounded-lg p-2.5 sm:p-3 border border-[#dbe0e6] dark:border-[#22352d] bg-white dark:bg-[#111b17] shadow-sm">
-                  <div className="flex justify-between items-center">
-                    <p className="text-[#617589] dark:text-[#9cb7aa] text-[10px] sm:text-xs font-semibold uppercase tracking-wider">{index.name}</p>
+                <button
+                  key={index.token || index.name}
+                  type="button"
+                  onClick={() => setActiveIndexToken((prev) => (prev === index.token ? null : index.token))}
+                  className={`flex min-w-[160px] sm:min-w-[180px] flex-1 flex-col justify-center gap-0.5 sm:gap-1 rounded-lg p-2.5 sm:p-3 border text-left bg-white dark:bg-[#111b17] shadow-sm transition-colors ${
+                    isActive
+                      ? 'border-[#137fec] dark:border-[#10b981]'
+                      : 'border-[#dbe0e6] dark:border-[#22352d] hover:bg-[#f7fafc] dark:hover:bg-[#16231d]'
+                  }`}
+                >
+                  <div className="flex justify-between items-center gap-2">
+                    <div className="min-w-0">
+                      <p className="text-[#617589] dark:text-[#9cb7aa] text-[10px] sm:text-xs font-semibold uppercase tracking-wider truncate">
+                        {index.name}
+                      </p>
+                    </div>
                     <span className={`material-symbols-outlined ${isPositive ? 'text-[#078838]' : 'text-red-500'} text-[14px] sm:text-[16px]`}>
                       {isPositive ? 'trending_up' : 'trending_down'}
                     </span>
                   </div>
-                  <p className="text-[#111418] dark:text-[#e8f3ee] text-base sm:text-lg font-bold leading-tight tabular-nums">{index.value?.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</p>
-                  <p className={`${isPositive ? 'text-[#078838]' : 'text-red-500'} text-[10px] sm:text-xs font-medium leading-normal tabular-nums`}>
-                    {isPositive ? '+' : ''}{index.change?.toFixed(2)} ({isPositive ? '+' : ''}{index.changePercent?.toFixed(2)}%)
+                  <p className="text-[#111418] dark:text-[#e8f3ee] text-base sm:text-lg font-bold leading-tight tabular-nums">
+                    {formatIndexNumber(index.value)}
                   </p>
-                </div>
+                  <p className={`${isPositive ? 'text-[#078838]' : 'text-red-500'} text-[10px] sm:text-xs font-medium leading-normal tabular-nums`}>
+                    {formatIndexSignedNumber(index.priceChange)} ({formatIndexSignedNumber(index.changePercent)}%)
+                  </p>
+                </button>
               );
             })
           )}
@@ -1377,19 +1760,30 @@ const Watchlist = () => {
       {/* Watchlist Tabs */}
       {!showSearchPanel && (
         <div className="flex px-3 sm:px-4 gap-1.5 sm:gap-2 py-2 sm:py-3 overflow-x-auto no-scrollbar bg-[#f6f7f8] dark:bg-[#050806]">
-          {watchlistTabs.map((tab) => (
-            <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              className={`flex shrink-0 items-center justify-center rounded-full px-3 sm:px-4 h-7 sm:h-8 text-xs sm:text-sm font-medium transition-colors ${
-                activeTab === tab
-                  ? 'bg-[#137fec] dark:bg-[#10b981] text-white'
-                  : 'bg-white dark:bg-[#0b120f] text-[#617589] dark:text-[#9cb7aa] border border-[#dbe0e6] dark:border-[#22352d] hover:bg-gray-50 dark:hover:bg-[#16231d]'
-              }`}
-            >
-              {tab}
-            </button>
-          ))}
+          {watchlistTabs.map((tab) => {
+            const isActive = activeTab === tab;
+            return (
+              <button
+                type="button"
+                key={tab}
+                onClick={() => handleTabClick(tab)}
+                onPointerDown={(event) => handleTabPointerDown(tab, event)}
+                onPointerMove={(event) => handleTabPointerMove(tab, event)}
+                onPointerUp={(event) => handleTabPointerUp(tab, event)}
+                onPointerCancel={() => handleTabPointerCancel(tab)}
+                onPointerLeave={() => handleTabPointerCancel(tab)}
+                onContextMenu={(event) => handleTabContextMenu(tab, event)}
+                title={tab === 'Watchlist 1' ? tab : `${tab} (hold to delete)`}
+                className={`flex shrink-0 items-center rounded-full h-7 sm:h-8 text-xs sm:text-sm font-medium transition-colors ${
+                  isActive
+                    ? 'bg-[#137fec] dark:bg-[#10b981] text-white'
+                    : 'bg-white dark:bg-[#0b120f] text-[#617589] dark:text-[#9cb7aa] border border-[#dbe0e6] dark:border-[#22352d] hover:bg-gray-50 dark:hover:bg-[#16231d]'
+                }`}
+              >
+                <span className="px-3 sm:px-4">{tab}</span>
+              </button>
+            );
+          })}
           <button
             type="button"
             onClick={handleCreateWatchlist}
@@ -1435,6 +1829,9 @@ const Watchlist = () => {
             const isPositive = change >= 0;
             const isSelected = selectedStock?.id === stock.id;
             const isOption = isOptionInstrument(stock);
+            const depthToken = getMarketDepthToken(stock);
+            const isDepthOpenForStock =
+              marketDepthSheet.open && getMarketDepthToken(marketDepthSheet.stock) === depthToken;
             return (
               <div
                 key={stock.id}
@@ -1565,10 +1962,10 @@ const Watchlist = () => {
                           type="button"
                           onClick={(event) => {
                             event.stopPropagation();
-                            setShowMarketDepth((prev) => !prev);
+                            handleToggleMarketDepth(stock);
                           }}
                           className={`flex items-center gap-2 text-[11px] font-medium ${
-                            showMarketDepth ? 'text-[#137fec]' : 'text-[#617589]'
+                            isDepthOpenForStock ? 'text-[#137fec]' : 'text-[#617589]'
                           } hover:text-[#137fec]`}
                         >
                           <span className="material-symbols-outlined text-[16px]">layers</span>
@@ -1587,17 +1984,181 @@ const Watchlist = () => {
                         Remove
                       </button>
                     </div>
-                    {showMarketDepth && (
-                      <div onClick={(event) => event.stopPropagation()}>
-                        <MarketDepthView data={getDepthData(stock)} />
-                      </div>
-                    )}
                   </div>
                 )}
               </div>
             );
           })
         )}
+        </div>
+      )}
+      {pendingDeleteTab && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/25 p-4"
+          onClick={handleCancelDeleteWatchlist}
+        >
+          <div
+            className="w-full max-w-[320px] rounded-2xl border border-[#dbe0e6] dark:border-[#22352d] bg-white dark:bg-[#111b17] shadow-xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="px-4 py-3 border-b border-[#edf0f3] dark:border-[#22352d]">
+              <p className="text-sm font-semibold text-[#111418] dark:text-[#e8f3ee]">Delete Watchlist</p>
+            </div>
+            <div className="px-4 py-3">
+              <p className="text-xs text-[#617589] dark:text-[#9cb7aa]">
+                Delete <span className="font-semibold text-[#111418] dark:text-[#e8f3ee]">{pendingDeleteTab}</span>? This cannot be undone.
+              </p>
+            </div>
+            <div className="px-3 pb-3 pt-1 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={handleCancelDeleteWatchlist}
+                disabled={isDeletingWatchlist}
+                className="h-8 px-3 rounded-lg text-xs font-medium border border-[#dbe0e6] dark:border-[#22352d] text-[#617589] dark:text-[#9cb7aa] hover:bg-[#f6f7f8] dark:hover:bg-[#16231d] disabled:opacity-60"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDeleteWatchlist}
+                disabled={isDeletingWatchlist}
+                className="h-8 px-3 rounded-lg text-xs font-semibold text-white bg-red-500 hover:bg-red-600 disabled:opacity-60"
+              >
+                {isDeletingWatchlist ? 'Deleting...' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {marketDepthSheet.open && marketDepthSheet.stock && (
+        <div
+          className="fixed inset-0 z-50 flex items-end"
+          onClick={closeMarketDepthSheet}
+        >
+          <div className="absolute inset-0 bg-black/30" />
+          <div
+            className="relative w-full rounded-t-2xl border-t border-[#dbe0e6] dark:border-[#22352d] bg-white dark:bg-[#111b17] shadow-2xl max-h-[75vh] overflow-hidden"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="mx-auto mt-2 mb-1 h-1.5 w-12 rounded-full bg-[#dbe0e6] dark:bg-[#22352d]" />
+            <div className="px-4 pb-3 pt-2 border-b border-[#dbe0e6] dark:border-[#22352d] flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-[#111418] dark:text-[#e8f3ee] text-base font-semibold truncate">
+                  {marketDepthSheet.stock.symbol || marketDepthSheet.stock.name}
+                </p>
+                <p className="text-[11px] text-[#617589] dark:text-[#9cb7aa]">
+                  {(marketDepthSheet.stock.exchange || marketDepthSheet.stock.segment || 'NSE').toUpperCase()} · Live Depth
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeMarketDepthSheet}
+                className="h-8 w-8 rounded-full border border-[#dbe0e6] dark:border-[#22352d] text-[#617589] dark:text-[#9cb7aa] flex items-center justify-center"
+                aria-label="Close market depth"
+              >
+                <span className="material-symbols-outlined text-[18px]">close</span>
+              </button>
+            </div>
+            <div className="overflow-y-auto max-h-[calc(75vh-64px)]">
+              <MarketDepthView data={getDepthData(marketDepthSheet.stock)} />
+            </div>
+          </div>
+        </div>
+      )}
+      {activeIndexCard && activeIndexNavigationStock && (
+        <div
+          className="fixed inset-0 z-40 flex items-end"
+          onClick={() => setActiveIndexToken(null)}
+        >
+          <div className="absolute inset-0 bg-black/30" />
+          <div
+            className="relative w-full rounded-t-2xl border-t border-[#dbe0e6] dark:border-[#22352d] bg-white dark:bg-[#111b17] shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="mx-auto mt-2 mb-1 h-1.5 w-12 rounded-full bg-[#dbe0e6] dark:bg-[#22352d]" />
+            <div className="px-4 pb-4 pt-2">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-[#111418] dark:text-[#e8f3ee] text-base font-semibold truncate">
+                    {activeIndexCard.name}
+                  </p>
+                  <p className="text-[11px] text-[#617589] dark:text-[#9cb7aa]">
+                    {activeIndexNavigationStock.exchange} · {activeIndexNavigationStock.segment}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setActiveIndexToken(null)}
+                  className="h-8 w-8 rounded-full border border-[#dbe0e6] dark:border-[#22352d] text-[#617589] dark:text-[#9cb7aa] flex items-center justify-center"
+                  aria-label="Close index details"
+                >
+                  <span className="material-symbols-outlined text-[18px]">close</span>
+                </button>
+              </div>
+
+              <div className="mt-3">
+                <p className="text-[#111418] dark:text-[#e8f3ee] text-2xl font-bold tabular-nums leading-none">
+                  {formatIndexNumber(activeIndexCard.value)}
+                </p>
+                <p className={`${(activeIndexCard.priceChange ?? 0) >= 0 ? 'text-[#078838]' : 'text-red-500'} mt-1 text-sm font-medium tabular-nums`}>
+                  {formatIndexSignedNumber(activeIndexCard.priceChange)} ({formatIndexSignedNumber(activeIndexCard.changePercent)}%)
+                </p>
+              </div>
+
+              <div className="mt-4 grid grid-cols-2 gap-2 rounded-xl border border-[#e5e9ee] dark:border-[#22352d] bg-[#f6f7f8] dark:bg-[#16231d] p-3 text-[11px] sm:text-xs">
+                <p className="text-[#617589] dark:text-[#9cb7aa]">
+                  Open: <span className="text-[#111418] dark:text-[#e8f3ee] font-medium tabular-nums">{formatIndexNumber(activeIndexCard.open)}</span>
+                </p>
+                <p className="text-[#617589] dark:text-[#9cb7aa]">
+                  High: <span className="text-[#111418] dark:text-[#e8f3ee] font-medium tabular-nums">{formatIndexNumber(activeIndexCard.high)}</span>
+                </p>
+                <p className="text-[#617589] dark:text-[#9cb7aa]">
+                  Low: <span className="text-[#111418] dark:text-[#e8f3ee] font-medium tabular-nums">{formatIndexNumber(activeIndexCard.low)}</span>
+                </p>
+                <p className="text-[#617589] dark:text-[#9cb7aa]">
+                  Close: <span className="text-[#111418] dark:text-[#e8f3ee] font-medium tabular-nums">{formatIndexNumber(activeIndexCard.close)}</span>
+                </p>
+                <p className="col-span-2 text-[#617589] dark:text-[#9cb7aa]">
+                  Price Chg: <span className="text-[#111418] dark:text-[#e8f3ee] font-medium tabular-nums">{formatIndexSignedNumber(activeIndexCard.priceChange)}</span>
+                </p>
+              </div>
+
+              <div className="mt-4 flex items-center gap-4 border-t border-[#e5e9ee] dark:border-[#22352d] pt-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveIndexToken(null);
+                    navigate('/chart', {
+                      state: {
+                        stock: activeIndexNavigationStock,
+                        ltpData: activeIndexLtpData,
+                      },
+                    });
+                  }}
+                  className="flex items-center gap-2 text-[11px] font-medium text-[#617589] hover:text-[#137fec]"
+                >
+                  <span className="material-symbols-outlined text-[16px]">show_chart</span>
+                  Chart
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveIndexToken(null);
+                    navigate('/option-chain', {
+                      state: {
+                        stock: activeIndexNavigationStock,
+                        ltpData: activeIndexLtpData,
+                      },
+                    });
+                  }}
+                  className="flex items-center gap-2 text-[11px] font-medium text-[#617589] hover:text-[#137fec]"
+                >
+                  <span className="material-symbols-outlined text-[16px]">list_alt</span>
+                  Option Chain
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
       <OrderBottomSheet

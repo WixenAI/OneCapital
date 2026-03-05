@@ -4,7 +4,7 @@ import http from "http";
 import { createClient } from "redis";
 import mongoose from "mongoose";
 import { createApp } from "./app.js";
-import { createIO, setFeedSubscriber, setFeedUnsubscriber, setSubCommandPublisher } from "./sockets/io.js";
+import { createIO, setFeedSubscriber, setFeedUnsubscriber, setFeedModeSetter, setSubCommandPublisher, syncGlobalWatchlistTokens } from "./sockets/io.js";
 import { KiteWebSocket } from './services/KiteWebSocket.js';
 import { startMasterRefreshCron } from './cron/masterRefresh.js';
 import { setFeedInstance } from "./services/feedState.js";
@@ -50,6 +50,7 @@ if (ENABLE_WS_FEED) {
   lmf = new KiteWebSocket();
   setFeedSubscriber((list, subscriptionType) => lmf.subscribe(list, subscriptionType));
   setFeedUnsubscriber((list) => lmf.unsubscribe(list));
+  setFeedModeSetter((list, mode) => lmf.setMode(list, mode));
   setFeedInstance(lmf);
 } else {
   console.log('[Startup] WS feed disabled (ENABLE_WS_FEED=false)');
@@ -78,6 +79,17 @@ if (process.env.REDIS_URL) {
           const { list } = JSON.parse(message);
           if (lmf) lmf.unsubscribe(list);
         } catch (e) { /* ignore malformed messages */ }
+      });
+      await subCmdClient.subscribe('kite:set_mode', (message) => {
+        try {
+          const { list, mode } = JSON.parse(message);
+          if (lmf) lmf.setMode(list, mode);
+        } catch (e) { /* ignore malformed messages */ }
+      });
+      await subCmdClient.subscribe('watchlist:global_sync', async () => {
+        try {
+          await syncGlobalWatchlistTokens();
+        } catch (e) { /* ignore sync errors */ }
       });
       if (ENABLE_ORDER_TRIGGER_ENGINE) {
         await subCmdClient.subscribe(ORDER_TRIGGER_COMMAND_CHANNEL, async (message) => {
@@ -141,6 +153,10 @@ await checkAndRefreshOnStartup();
 // Connect to Kite WebSocket after DB is ready
 if (ENABLE_WS_FEED && lmf) {
   lmf.connect();
+  // Subscribe all watchlist + index tokens globally (queued until Kite connects)
+  syncGlobalWatchlistTokens().catch(err =>
+    console.error('[GlobalRetain] Boot sync failed:', err.message)
+  );
 }
 
 const PORT = Number(config?.port || process.env.PORT || 8081);

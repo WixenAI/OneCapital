@@ -153,11 +153,11 @@ export const useMarketTicks = (url, opts = {}) => {
     if (normalized.length === 0) return;
 
     const noLongerNeededByType = unregisterTokens(normalized, subscriptionType);
-    const fullyInactive = noLongerNeededByType.filter((item) => !isTokenActive(item.instrument_token));
 
-    // Unsubscribe from socket only when token is inactive across all types.
-    if (socketRef.current?.connected && fullyInactive.length > 0) {
-      socketRef.current.emit('unsubscribe', fullyInactive, subscriptionType);
+    // Inform server whenever this subscription type no longer needs a token.
+    // Server can downgrade mode (e.g., full -> quote) even if token remains active in another type.
+    if (socketRef.current?.connected && noLongerNeededByType.length > 0) {
+      socketRef.current.emit('unsubscribe', noLongerNeededByType, subscriptionType);
     }
     normalized.forEach((item) => {
       const key = String(item.instrument_token);
