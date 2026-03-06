@@ -692,8 +692,8 @@ const Portfolio = () => {
           if (!a.isClosed && b.isClosed) return -1;
           if (a.isClosed && !b.isClosed) return 1;
           if (a.isClosed && b.isClosed) {
-            const aTime = (a.exitAtDate || a.placedAtDate || new Date(0)).getTime();
-            const bTime = (b.exitAtDate || b.placedAtDate || new Date(0)).getTime();
+            const aTime = (parseDate(a.exitAtDate) || parseDate(a.placedAtDate) || new Date(0)).getTime();
+            const bTime = (parseDate(b.exitAtDate) || parseDate(b.placedAtDate) || new Date(0)).getTime();
             return bTime - aTime;
           }
           return 0;
@@ -718,8 +718,8 @@ const Portfolio = () => {
           if (!a.isClosed && b.isClosed) return -1;
           if (a.isClosed && !b.isClosed) return 1;
           if (a.isClosed && b.isClosed) {
-            const aTime = (a.exitAtDate || a.placedAtDate || new Date(0)).getTime();
-            const bTime = (b.exitAtDate || b.placedAtDate || new Date(0)).getTime();
+            const aTime = (parseDate(a.exitAtDate) || parseDate(a.placedAtDate) || new Date(0)).getTime();
+            const bTime = (parseDate(b.exitAtDate) || parseDate(b.placedAtDate) || new Date(0)).getTime();
             return bTime - aTime;
           }
           return 0;
@@ -1316,6 +1316,7 @@ const Portfolio = () => {
         onClose={() => setModifyOrder(null)}
         onModified={() => fetchPortfolio({ force: true })}
         marketClosedForCustomer={!isCustomerTradeAllowed}
+        livePrices={livePrices}
       />
 
       <OrderDetailSheet
@@ -1324,6 +1325,7 @@ const Portfolio = () => {
         tab={detailTab}
         onClose={() => setDetailOrder(null)}
         onRefresh={() => fetchPortfolio({ force: true })}
+        livePrices={livePrices}
       />
 
       <ExitOrderSheet

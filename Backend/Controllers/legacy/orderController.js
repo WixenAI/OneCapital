@@ -507,10 +507,9 @@ const updateOrder = asyncHandler(async (req, res) => {
   if (quantity) update.quantity = Number(quantity);
   if (lots) update.lots = Number(lots);
   if (hasPriceInput && String(order_status || '').toUpperCase() !== 'CLOSED') {
-    update.price = requestedPrice;
-    // Keep entry price fields aligned so broker-side avg price edits reflect in UI/P&L.
-    update.raw_entry_price = requestedPrice;
-    update.effective_entry_price = requestedPrice;
+    // NOTE: weighted average is computed later (after fetching existing order)
+    // when qty increases. Store raw requested price temporarily.
+    update._requestedPrice = requestedPrice;
     update.entry_spread_applied = 0;
   }
   if (order_status) {
@@ -564,6 +563,29 @@ const updateOrder = asyncHandler(async (req, res) => {
 
     if (!existing) {
       return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+
+    // ── Weighted average price calculation when qty increases ──
+    if (update._requestedPrice !== undefined) {
+      const isQtyIncrease = update.quantity && update.quantity > existing.quantity;
+      if (isQtyIncrease) {
+        const oldQty = toNumber(existing.quantity);
+        const oldPrice = toNumber(existing.effective_entry_price || existing.price);
+        const addedQty = toNumber(update.quantity) - oldQty;
+        const newPrice = toNumber(update._requestedPrice);
+        // Weighted average: (oldQty × oldPrice + addedQty × newPrice) / totalQty
+        const weightedAvg = ((oldQty * oldPrice) + (addedQty * newPrice)) / toNumber(update.quantity);
+        const finalPrice = Math.round(weightedAvg * 100) / 100;
+        update.price = finalPrice;
+        update.raw_entry_price = finalPrice;
+        update.effective_entry_price = finalPrice;
+      } else {
+        // No qty increase — direct price update (broker edit or same-qty modify)
+        update.price = update._requestedPrice;
+        update.raw_entry_price = update._requestedPrice;
+        update.effective_entry_price = update._requestedPrice;
+      }
+      delete update._requestedPrice;
     }
 
     const isLongTermHoldingOrder = isLongTermProduct(update.product || existing.product || product);

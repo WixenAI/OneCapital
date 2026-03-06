@@ -822,6 +822,7 @@ const Orders = () => {
         onClose={() => setModifyOrder(null)}
         onModified={() => fetchOrders({ force: true })}
         marketClosedForCustomer={!isCustomerTradeAllowed}
+        livePrices={livePrices}
       />
 
       {/* Order Detail Bottom Sheet (all tabs) */}
@@ -831,6 +832,7 @@ const Orders = () => {
         tab={activeTab}
         onClose={() => setDetailOrder(null)}
         onRefresh={() => fetchOrders({ force: true })}
+        livePrices={livePrices}
       />
 
       {/* Exit Order Bottom Sheet */}

@@ -14,6 +14,7 @@ const ModifyOrderSheet = ({
   onExtendValidity,
   brokerMode,
   marketClosedForCustomer = false,
+  livePrices = {},
 }) => {
   const toPositiveNumber = (value) => {
     const parsed = Number(value);
@@ -36,7 +37,7 @@ const ModifyOrderSheet = ({
   const lotSize = Math.max(1, Math.round(inferredLotSize || 1));
   const currentLots = rawLots > 0 ? rawLots : Math.round(currentQty / lotSize);
   const currentPrice = order?.price || 0;
-  const ltp = order?.ltp || order?.last_price || currentPrice;
+  const ltp = (livePrices[order?.instrument_token] ?? order?.ltp ?? order?.last_price ?? currentPrice) || 0;
   const symbol = order?.symbol || '';
   const product = (order?.product || 'MIS').toUpperCase();
   const isLongTerm = product === 'CNC' || product === 'NRML';
@@ -171,8 +172,12 @@ const ModifyOrderSheet = ({
       if (priceChanged) {
         payload.price = parsedEditPrice;
       } else if (lotsChanged) {
-        // Update avg price to current LTP when lots change
-        payload.price = ltp;
+        // Weighted average price: (oldQty × oldPrice + addedQty × LTP) / newTotalQty
+        const weightedAvg = (currentQty * currentPrice + addQty * ltp) / newTotalQty;
+        payload.price = Math.round(weightedAvg * 100) / 100;
+        // Send original values so backend can verify independently
+        payload.old_price = currentPrice;
+        payload.old_quantity = currentQty;
       }
 
       // CNC/NRML orders with qty changes need broker re-approval
@@ -296,9 +301,12 @@ const ModifyOrderSheet = ({
                   <span>New total: <span className="font-semibold text-[#111418] dark:text-[#e8f3ee]">{newTotalLots} lots ({newTotalQty} qty)</span></span>
                 </div>
                 <div className="flex items-center gap-1">
-                  <span>New Avg Price:</span>
+                  <span>LTP:</span>
                   <span className="font-semibold text-[#111418] dark:text-[#e8f3ee]">₹{ltp.toFixed(2)}</span>
-                  <span className="text-[10px]">(current LTP)</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <span>New Avg Price:</span>
+                  <span className="font-semibold text-[#111418] dark:text-[#e8f3ee]">₹{(newTotalQty > 0 ? (currentQty * currentPrice + addQty * ltp) / newTotalQty : currentPrice).toFixed(2)}</span>
                 </div>
               </div>
             )}

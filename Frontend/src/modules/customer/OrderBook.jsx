@@ -690,6 +690,7 @@ const OrderBook = () => {
         onClose={() => setModifyOrder(null)}
         onModified={() => fetchOrderBook({ pageToLoad: 1, append: false })}
         marketClosedForCustomer={!isCustomerTradeAllowed}
+        livePrices={livePrices}
       />
 
       <OrderDetailSheet
@@ -698,6 +699,7 @@ const OrderBook = () => {
         tab={isClosedStatus(toUpper(detailOrder?.status || detailOrder?.order_status)) ? 'closed' : 'open'}
         onClose={() => setDetailOrder(null)}
         onRefresh={() => fetchOrderBook({ pageToLoad: 1, append: false })}
+        livePrices={livePrices}
       />
 
       <ExitOrderSheet

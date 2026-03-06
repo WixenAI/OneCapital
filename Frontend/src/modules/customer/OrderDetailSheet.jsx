@@ -35,14 +35,14 @@ const statusBadgeClass = (status) => {
   return 'bg-gray-100 dark:bg-[#16231d] text-[#617589] dark:text-[#9cb7aa]';
 };
 
-const OrderDetailSheet = ({ isOpen, order, tab, onClose }) => {
+const OrderDetailSheet = ({ isOpen, order, tab, onClose, livePrices = {} }) => {
   if (!isOpen || !order) return null;
 
   const side = (order.side || 'BUY').toUpperCase();
   const isBuy = side === 'BUY';
   const qty = toNumber(order.quantity);
   const avgPrice = toNumber(order.effective_entry_price ?? order.price);
-  const ltp = toNumber(order.ltp ?? order.price);
+  const ltp = toNumber(livePrices[order.instrument_token] ?? order.ltp ?? order.price);
   const exitPrice = toNumber(order.effective_exit_price ?? order.closed_ltp ?? order.exit_price ?? ltp);
   const isClosed = tab === 'closed';
   const status = String(order.status || order.order_status || '').toUpperCase();
