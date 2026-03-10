@@ -5,6 +5,7 @@ import brokerApi from '../../api/broker';
 const activityFilters = [
   { key: 'all', label: 'All' },
   { key: 'order', label: 'Orders' },
+  { key: 'order_modify', label: 'Modified' },
   { key: 'payment', label: 'Payments' },
   { key: 'client_joined', label: 'Clients' },
 ];
@@ -13,6 +14,8 @@ const getActivityIcon = (type) => {
   switch (type) {
     case 'order':
       return 'shopping_bag';
+    case 'order_modify':
+      return 'edit_note';
     case 'payment':
       return 'payments';
     case 'client_joined':
@@ -26,6 +29,8 @@ const getActivityColors = (type) => {
   switch (type) {
     case 'order':
       return { bg: 'bg-blue-50', text: 'text-[#137fec]' };
+    case 'order_modify':
+      return { bg: 'bg-purple-50', text: 'text-purple-600' };
     case 'payment':
       return { bg: 'bg-amber-50', text: 'text-amber-600' };
     case 'client_joined':
@@ -165,6 +170,35 @@ const Logs = () => {
                         <p className="shrink-0 text-[10px] text-[#617589]">{formatTimestamp(activity.timestamp)}</p>
                       </div>
                       <p className="mt-0.5 text-xs text-[#617589]">{activity.message || 'No message'}</p>
+                      {activity.type === 'order_modify' && activity.meta && (
+                        <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 rounded-lg bg-purple-50 px-3 py-2">
+                          <div>
+                            <p className="text-[9px] font-semibold uppercase text-purple-400">Old Qty</p>
+                            <p className="text-xs font-bold text-[#111418]">{activity.meta.old_quantity ?? '—'}</p>
+                          </div>
+                          <div>
+                            <p className="text-[9px] font-semibold uppercase text-purple-400">New Qty</p>
+                            <p className="text-xs font-bold text-[#111418]">
+                              {activity.meta.new_quantity ?? '—'}
+                              {activity.meta.added_lots > 0 && (
+                                <span className="ml-1 text-[9px] font-semibold text-purple-600">+{activity.meta.added_lots} lots</span>
+                              )}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-[9px] font-semibold uppercase text-purple-400">Old Avg</p>
+                            <p className="text-xs font-bold text-[#111418]">
+                              {activity.meta.old_price != null ? `₹${Number(activity.meta.old_price).toFixed(2)}` : '—'}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-[9px] font-semibold uppercase text-purple-400">New Avg</p>
+                            <p className="text-xs font-bold text-purple-700">
+                              {activity.meta.new_price != null ? `₹${Number(activity.meta.new_price).toFixed(2)}` : '—'}
+                            </p>
+                          </div>
+                        </div>
+                      )}
                       {activity.status && (
                         <span className={`mt-2 inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold ${getStatusStyles(activity.status)}`}>
                           {String(activity.status).toUpperCase()}

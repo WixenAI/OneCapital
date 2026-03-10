@@ -118,10 +118,10 @@ const FundCronJobs = () => {
             type: 'system',
             eventType: 'AUTO_WEEKLY_SETTLEMENT_CRON',
             category: 'funds',
-            message: 'Auto weekly settlement cron completed',
+            message: `Auto weekly settlement cron completed. ${summary.attempted} brokers were processed, ${summary.skipped} were skipped, and ${summary.failed} failed.`,
             actor: { type: 'system', id_str: 'SYSTEM', role: 'system' },
             source: 'cron',
-            note: 'Weekly auto settlement run (Monday 00:00 IST)',
+            note: 'Monday 00:00 IST auto weekly settlement run completed.',
             metadata: summary,
           });
         } catch (error) {
@@ -177,22 +177,6 @@ const FundCronJobs = () => {
           console.log(
             `[CRON] Reconciliation done: ${intradayFixedCount} intraday corrected, ${deliveryFixedCount} delivery corrected, ${cleanCount} clean.`
           );
-
-          await writeAuditSuccess({
-            type: 'system',
-            eventType: 'MARGIN_RECONCILE_MIDNIGHT',
-            category: 'margin',
-            message: 'Midnight margin reconciliation completed',
-            actor: { type: 'system', id_str: 'SYSTEM', role: 'system' },
-            source: 'cron',
-            note: 'Per-order lifecycle reconciliation pass',
-            metadata: {
-              totalFunds: allFunds.length,
-              intradayFixedCount,
-              deliveryFixedCount,
-              cleanCount,
-            },
-          });
         } catch (error) {
           console.error('[CRON] Error in midnight margin reconciliation:', error);
         }

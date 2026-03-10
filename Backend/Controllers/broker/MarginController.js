@@ -6,6 +6,19 @@ import FundModel from '../../Model/FundManagement/FundModel.js';
 import CustomerModel from '../../Model/Auth/CustomerModel.js';
 import { writeAuditSuccess } from '../../Utils/AuditLogger.js';
 
+const toNumber = (value) => {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+};
+
+const formatCurrency = (value) =>
+  toNumber(value).toLocaleString('en-IN', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+
+const formatPercent = (value) => `${toNumber(value).toFixed(2)}%`;
+
 const getBrokerOwnershipClauses = (brokerId, brokerIdStr) => {
   const clauses = [{ broker_id: brokerId }, { attached_broker_id: brokerId }];
   if (brokerIdStr) {
@@ -116,12 +129,27 @@ const updateClientMargin = asyncHandler(async (req, res) => {
   };
 
   if (updateFlags.intraday || updateFlags.overnight) {
+    const limitChanges = [];
+    const updatedFields = [];
+    if (updateFlags.intraday) {
+      limitChanges.push(
+        `Intraday available changed from ${formatCurrency(beforeMargin.intraday.available)} to ${formatCurrency(afterMargin.intraday.available)}.`
+      );
+      updatedFields.push('intraday limit');
+    }
+    if (updateFlags.overnight) {
+      limitChanges.push(
+        `Overnight available changed from ${formatCurrency(beforeMargin.overnight.available)} to ${formatCurrency(afterMargin.overnight.available)}.`
+      );
+      updatedFields.push('overnight limit');
+    }
+
     await writeAuditSuccess({
       req,
       type: 'transaction',
       eventType: 'MARGIN_LIMIT_UPDATE',
       category: 'margin',
-      message: `Broker updated margin limits for customer ${customer.customer_id}`,
+      message: `Broker updated margin limits for customer ${customer.customer_id}. ${limitChanges.join(' ')}`,
       target: {
         type: 'customer',
         id: customer._id,
@@ -142,8 +170,8 @@ const updateClientMargin = asyncHandler(async (req, res) => {
       },
       marginBefore: beforeMargin,
       marginAfter: afterMargin,
-      note: 'Broker margin settings updated',
-      metadata: { updates },
+      note: `Updated fields: ${updatedFields.join(', ')}.`,
+      metadata: { updates, updatedFields },
     });
   }
 
@@ -153,7 +181,7 @@ const updateClientMargin = asyncHandler(async (req, res) => {
       type: 'transaction',
       eventType: 'OPTION_LIMIT_PERCENT_UPDATE',
       category: 'margin',
-      message: `Broker updated option limit for customer ${customer.customer_id}`,
+      message: `Broker updated option limit percentage for customer ${customer.customer_id} from ${formatPercent(beforeMargin.optionLimitPercentage)} to ${formatPercent(afterMargin.optionLimitPercentage)}.`,
       target: {
         type: 'customer',
         id: customer._id,
@@ -178,7 +206,7 @@ const updateClientMargin = asyncHandler(async (req, res) => {
       marginAfter: {
         optionLimitPercentage: afterMargin.optionLimitPercentage,
       },
-      note: 'Broker option limit percentage updated',
+      note: 'Manual option limit update recorded.',
       metadata: {
         beforeOptionLimitPercentage: beforeMargin.optionLimitPercentage,
         afterOptionLimitPercentage: afterMargin.optionLimitPercentage,

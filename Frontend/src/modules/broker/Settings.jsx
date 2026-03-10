@@ -20,6 +20,7 @@ const Settings = () => {
     autoWeeklySettlementEnabled: true,
   });
   const [settlementHistory, setSettlementHistory] = useState([]);
+  const [settlementWarning, setSettlementWarning] = useState(null);
 
   const [broker, setBroker] = useState({
     name: '',
@@ -35,6 +36,22 @@ const Settings = () => {
     upiId: '',
     qrPhotoUrl: ''
   });
+
+  const getNextMondayIst = () => {
+    const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+    const nowIst = new Date(Date.now() + IST_OFFSET_MS);
+    const day = nowIst.getUTCDay(); // 0=Sun, 1=Mon...6=Sat
+    const daysUntilMonday = day === 1 ? 7 : (1 - day + 7) % 7;
+    const nextMonday = new Date(nowIst);
+    nextMonday.setUTCDate(nextMonday.getUTCDate() + daysUntilMonday);
+    nextMonday.setUTCHours(0, 0, 0, 0);
+    return new Date(nextMonday.getTime() - IST_OFFSET_MS);
+  };
+
+  const formatMondayDate = (utcDate) =>
+    utcDate.toLocaleDateString('en-IN', {
+      weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Asia/Kolkata',
+    });
 
   const formatSettlementDateTime = (value) => {
     if (!value) return '-';
@@ -133,7 +150,7 @@ const Settings = () => {
     }
   }, []);
 
-  const handleToggleAutoSettlement = async () => {
+  const doToggleAutoSettlement = async () => {
     const nextValue = !settlementConfig.autoWeeklySettlementEnabled;
     setSettlementSaving(true);
     setSettlementNotice('');
@@ -143,9 +160,7 @@ const Settings = () => {
           autoWeeklySettlementEnabled: nextValue,
         },
       });
-      setSettlementConfig({
-        autoWeeklySettlementEnabled: nextValue,
-      });
+      setSettlementConfig({ autoWeeklySettlementEnabled: nextValue });
       setSettlementNotice(
         nextValue
           ? 'Auto weekly settlement enabled (Monday 00:00 IST).'
@@ -159,7 +174,23 @@ const Settings = () => {
     }
   };
 
-  const handleRunWeeklySettlement = async () => {
+  const handleToggleAutoSettlement = () => {
+    const nextValue = !settlementConfig.autoWeeklySettlementEnabled;
+    if (!nextValue) {
+      // Disabling is safe — no warning needed
+      doToggleAutoSettlement();
+      return;
+    }
+    const nextMonday = getNextMondayIst();
+    setSettlementWarning({
+      title: 'Enable Auto Settlement for All Clients?',
+      mode: 'auto_enable',
+      nextMondayLabel: formatMondayDate(nextMonday),
+      onConfirm: doToggleAutoSettlement,
+    });
+  };
+
+  const doRunWeeklySettlement = async () => {
     setSettlementRunning(true);
     setSettlementNotice('');
     try {
@@ -172,6 +203,16 @@ const Settings = () => {
     } finally {
       setSettlementRunning(false);
     }
+  };
+
+  const handleRunWeeklySettlement = () => {
+    const nextMonday = getNextMondayIst();
+    setSettlementWarning({
+      title: 'Run Settlement for All Clients?',
+      mode: 'run_all',
+      nextMondayLabel: formatMondayDate(nextMonday),
+      onConfirm: doRunWeeklySettlement,
+    });
   };
 
   const uploadQrToCloudinary = async (file) => {
@@ -251,6 +292,7 @@ const Settings = () => {
   }
 
   return (
+    <>
     <div className="flex flex-col min-h-screen bg-[#f6f7f8] pb-20">
       {/* Header */}
       <div className="sticky top-0 z-50 bg-white border-b border-gray-200">
@@ -519,6 +561,85 @@ const Settings = () => {
         </div>
       </div>
     </div>
+
+    {/* Settlement Warning Modal */}
+    {settlementWarning && (
+      <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+        <div className="bg-white w-full sm:max-w-sm rounded-t-2xl sm:rounded-2xl shadow-xl overflow-hidden">
+          {/* Header */}
+          <div className="bg-amber-50 border-b border-amber-100 px-5 pt-5 pb-4">
+            <div className="flex items-start gap-3">
+              <div className="size-11 rounded-full bg-amber-100 flex items-center justify-center shrink-0 mt-0.5">
+                <span className="material-symbols-outlined text-amber-600 text-[22px]">warning</span>
+              </div>
+              <div>
+                <p className="text-[#111418] font-bold text-base leading-snug">{settlementWarning.title}</p>
+                <p className="text-amber-700 text-xs font-medium mt-0.5">Review carefully before proceeding</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Warning Body */}
+          <div className="px-5 py-4 space-y-3">
+            <div className="rounded-xl bg-red-50 border border-red-100 px-4 py-3">
+              <p className="text-red-700 text-xs font-bold uppercase tracking-wider mb-2">This action will reset:</p>
+              <ul className="space-y-1.5">
+                {[
+                  'Net Cash P&L balance → resets to ₹0 for affected clients',
+                  'Portfolio realized P&L counter → restarts from this point',
+                  'Weekly P&L boundary → new week begins from settlement timestamp',
+                ].map((item) => (
+                  <li key={item} className="flex items-start gap-2 text-xs text-red-700">
+                    <span className="material-symbols-outlined text-red-500 text-[13px] mt-0.5 shrink-0">cancel</span>
+                    {item}
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            <div className="rounded-xl bg-blue-50 border border-blue-100 px-4 py-3">
+              <p className="text-[#137fec] text-xs font-bold uppercase tracking-wider mb-1.5">Next Auto-Run</p>
+              <p className="text-[#111418] text-sm font-bold">{settlementWarning.nextMondayLabel}</p>
+              <p className="text-[#617589] text-xs mt-0.5">at 12:00 AM IST (Monday)</p>
+            </div>
+
+            <div className="rounded-xl bg-amber-50 border border-amber-100 px-4 py-3 space-y-1.5">
+              {[
+                'Contact each client before running settlement.',
+                'Ensure losses are recovered or profits are transferred.',
+                'Clients with open positions will still accumulate P&L after reset.',
+              ].map((item) => (
+                <div key={item} className="flex items-start gap-2 text-xs text-amber-800">
+                  <span className="material-symbols-outlined text-amber-500 text-[13px] mt-0.5 shrink-0">info</span>
+                  {item}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Actions */}
+          <div className="px-5 pb-6 pt-1 flex gap-3">
+            <button
+              onClick={() => setSettlementWarning(null)}
+              className="flex-1 h-11 bg-gray-100 text-[#111418] rounded-xl font-bold text-sm"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => {
+                const fn = settlementWarning.onConfirm;
+                setSettlementWarning(null);
+                fn();
+              }}
+              className="flex-1 h-11 bg-amber-500 hover:bg-amber-600 text-white rounded-xl font-bold text-sm"
+            >
+              Proceed Anyway
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 };
 

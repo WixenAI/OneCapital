@@ -141,7 +141,63 @@ const getWeeklySettlementHistory = asyncHandler(async (req, res) => {
   });
 });
 
+/**
+ * @desc     Run weekly settlement for a single customer
+ * @route    POST /api/broker/settlement/customer/:customerIdStr/run
+ * @access   Private (Broker only)
+ */
+const runCustomerSettlement = asyncHandler(async (req, res) => {
+  const { brokerId, brokerIdStr } = getBrokerContext(req);
+  if (!brokerIdStr) {
+    return res.status(400).json({
+      success: false,
+      message: 'Broker identifier missing for settlement.',
+    });
+  }
+
+  const { customerIdStr } = req.params;
+  if (!customerIdStr) {
+    return res.status(400).json({
+      success: false,
+      message: 'Customer ID is required for per-customer settlement.',
+    });
+  }
+
+  const fund = await FundModel.findOne({
+    broker_id_str: brokerIdStr,
+    customer_id_str: customerIdStr,
+  }).select('_id');
+
+  if (!fund) {
+    return res.status(404).json({
+      success: false,
+      message: 'No fund record found for this customer under your broker account.',
+    });
+  }
+
+  const { effectiveAt, note = '', force = false } = req.body || {};
+  const summary = await runWeeklySettlementForBroker({
+    brokerId,
+    brokerIdStr,
+    customerIdStr,
+    mode: 'manual',
+    effectiveAt: effectiveAt || new Date(),
+    note: note || `Manual per-customer settlement for ${customerIdStr}`,
+    force: Boolean(force),
+    req,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: summary.created > 0
+      ? `Settlement completed for ${customerIdStr}.`
+      : `No new settlement created for ${customerIdStr} — already settled this week.`,
+    settlement: summary,
+  });
+});
+
 export {
   runWeeklySettlement,
+  runCustomerSettlement,
   getWeeklySettlementHistory,
 };

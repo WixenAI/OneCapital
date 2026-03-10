@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import customerApi from '../../api/customer';
 
-const JOBBIN_PRICE = '0.08';
 const MARKET_CLOSED_TEXT = 'Market Closed. Open From 9:15AM To 3:15PM On Working Days';
 const LIVE_TICK_MAX_AGE_MS = 3 * 1000;
 
@@ -323,7 +322,6 @@ const OrderBottomSheet = ({
         expiry: instrumentExpiry,
         trigger_price: orderType === 'SL' ? Number(triggerPrice || 0) : 0,
         target: orderType === 'TGT' ? Number(targetPrice || 0) : 0,
-        jobbin_price: JOBBIN_PRICE,
         meta: {
           orderType,
           validity,

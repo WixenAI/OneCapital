@@ -12,6 +12,12 @@ const toNumber = (value) => {
   return Number.isFinite(n) ? n : 0;
 };
 
+const formatCurrency = (value) =>
+  toNumber(value).toLocaleString('en-IN', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+
 const sanitizeStatus = (status) => String(status || '').trim().toLowerCase();
 
 const buildStatusQuery = (status) => {
@@ -205,13 +211,20 @@ const verifyPayment = asyncHandler(async (req, res) => {
   payment.verification_note = notes || '';
   if (transactionRef) payment.payment_reference = transactionRef;
   await payment.save();
+  const paymentRef = payment.payment_reference || payment._id?.toString() || '';
+  const verifyNoteParts = [
+    `Credited ${formatCurrency(amountToMark)}. Balance moved from ${formatCurrency(previousBalance)} to ${formatCurrency(newBalance)}.`,
+  ];
+  if (notes) {
+    verifyNoteParts.push(`Broker note: ${notes}`);
+  }
 
   await writeAuditSuccess({
     req,
     type: 'transaction',
     eventType: 'PAYMENT_VERIFY',
     category: 'funds',
-    message: `Broker verified payment for customer ${payment.customer_id_str}`,
+    message: `Add-funds request ${paymentRef} for customer ${payment.customer_id_str} was verified by broker.`,
     target: {
       type: 'customer',
       id: payment.customer_id,
@@ -220,7 +233,7 @@ const verifyPayment = asyncHandler(async (req, res) => {
     entity: {
       type: 'payment_proof',
       id: payment._id,
-      ref: payment.payment_reference || payment._id?.toString(),
+      ref: paymentRef,
     },
     broker: {
       broker_id: brokerId,
@@ -239,11 +252,11 @@ const verifyPayment = asyncHandler(async (req, res) => {
       depositedCash: newBalance,
       availableCash: newBalance,
     },
-    note: notes || 'Payment verified by broker',
+    note: verifyNoteParts.join(' '),
     metadata: {
       paymentStatus: payment.status,
       verifiedAmount: amountToMark,
-      transactionRef: transactionRef || payment.payment_reference || '',
+      transactionRef: transactionRef || paymentRef,
     },
   });
 
@@ -294,13 +307,17 @@ const rejectPayment = asyncHandler(async (req, res) => {
   payment.reviewed_at = new Date();
   payment.rejection_reason = reason || '';
   await payment.save();
+  const paymentRef = payment.payment_reference || payment._id?.toString() || '';
+  const rejectNote = reason
+    ? `Reason: ${reason}.`
+    : 'Rejected during broker review.';
 
   await writeAuditSuccess({
     req,
     type: 'transaction',
     eventType: 'PAYMENT_REJECT',
     category: 'funds',
-    message: `Broker rejected payment for customer ${payment.customer_id_str}`,
+    message: `Add-funds request ${paymentRef} for customer ${payment.customer_id_str} was rejected by broker.`,
     target: {
       type: 'customer',
       id: payment.customer_id,
@@ -309,7 +326,7 @@ const rejectPayment = asyncHandler(async (req, res) => {
     entity: {
       type: 'payment_proof',
       id: payment._id,
-      ref: payment.payment_reference || payment._id?.toString(),
+      ref: paymentRef,
     },
     broker: {
       broker_id: brokerId,
@@ -319,7 +336,7 @@ const rejectPayment = asyncHandler(async (req, res) => {
       customer_id: payment.customer_id,
       customer_id_str: payment.customer_id_str,
     },
-    note: reason || 'Payment rejected by broker',
+    note: rejectNote,
     metadata: {
       amount: toNumber(payment.amount),
       previousStatus,
@@ -368,13 +385,14 @@ const deletePayment = asyncHandler(async (req, res) => {
   };
 
   await PaymentProofModel.deleteOne({ _id: payment._id });
+  const paymentRef = payment.payment_reference || payment._id?.toString() || '';
 
   await writeAuditSuccess({
     req,
     type: 'transaction',
     eventType: 'PAYMENT_DELETE',
     category: 'funds',
-    message: `Broker deleted payment request for customer ${payment.customer_id_str}`,
+    message: `Add-funds request ${paymentRef} for customer ${payment.customer_id_str} was deleted by broker.`,
     target: {
       type: 'customer',
       id: payment.customer_id,
@@ -383,7 +401,7 @@ const deletePayment = asyncHandler(async (req, res) => {
     entity: {
       type: 'payment_proof',
       id: payment._id,
-      ref: payment.payment_reference || payment._id?.toString(),
+      ref: paymentRef,
     },
     broker: {
       broker_id_str: brokerIdStr,
@@ -392,7 +410,7 @@ const deletePayment = asyncHandler(async (req, res) => {
       customer_id: payment.customer_id,
       customer_id_str: payment.customer_id_str,
     },
-    note: 'Payment request deleted by broker',
+    note: 'Deleted before verification.',
     metadata: deletedSnapshot,
   });
 
@@ -575,7 +593,7 @@ const createPaymentRequest = async (
     type: 'transaction',
     eventType: 'PAYMENT_REQUEST_CREATE',
     category: 'funds',
-    message: `Customer created payment request ${payment._id?.toString()}`,
+    message: `Add-funds request ${payment.payment_reference || payment._id?.toString()} was created by customer ${customerId}.`,
     source: 'api',
     actor: {
       type: 'customer',
@@ -602,7 +620,9 @@ const createPaymentRequest = async (
       customer_id_str: customerId,
     },
     amountDelta: parsedAmount,
-    note: hasProof ? 'Payment request with proof submitted' : 'Payment request created (pending proof)',
+    note: hasProof
+      ? `Requested amount: ${formatCurrency(parsedAmount)}. Proof submitted and pending review.`
+      : `Requested amount: ${formatCurrency(parsedAmount)}. Waiting for payment proof upload.`,
     metadata: {
       status: payment.status,
       paymentMethod: payment.payment_method,

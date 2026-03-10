@@ -241,8 +241,8 @@ const adminApi = {
     return response.data;
   },
 
-  clearLogs: async (scope = 'all') => {
-    const response = await api.delete('/admin/logs', { data: { scope } });
+  clearLogs: async (scope = 'all', period = 'all') => {
+    const response = await api.delete('/admin/logs', { data: { scope, period } });
     return response.data;
   },
 

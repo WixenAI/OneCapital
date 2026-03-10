@@ -21,6 +21,7 @@ const toNumber = (value) => {
 };
 
 const readNumber = (value) => {
+  if (value === null || value === undefined || value === '') return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
 };
@@ -60,6 +61,7 @@ const resolveOrderPnl = ({ order, isClosed, ltp }) => {
   const qty = toNumber(order?.qty ?? order?.quantity);
   const entryPrice = getEffectiveEntryPrice(order);
   const { entry: entryBrokerage, exit: exitBrokerage, total: totalBrokerage } = getOrderBrokerage(order);
+  const openEntryBrokerage = entryBrokerage != null ? entryBrokerage : totalBrokerage;
 
   if (!isClosed) {
     return calculateOpenPnL({
@@ -67,7 +69,7 @@ const resolveOrderPnl = ({ order, isClosed, ltp }) => {
       avgPrice: entryPrice,
       ltp,
       qty,
-      entryBrokerage,
+      entryBrokerage: openEntryBrokerage,
     });
   }
 
@@ -917,14 +919,7 @@ const Portfolio = () => {
       };
     }
 
-    const jobbing = Number(order.jobbin_price || 0.08);
-    let closedLtp = liveLtp;
-    if (liveLtp > 0 && jobbing > 0) {
-      closedLtp = order.side === 'BUY'
-        ? liveLtp - (liveLtp * (jobbing / 100))
-        : liveLtp + (liveLtp * (jobbing / 100));
-    }
-    closedLtp = Number(closedLtp.toFixed(4));
+    const closedLtp = Number(liveLtp.toFixed(4));
 
     try {
       await customerApi.updateOrder({

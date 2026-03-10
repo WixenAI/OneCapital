@@ -24,6 +24,19 @@ const parseDate = (value, endOfDay = false) => {
   return d;
 };
 
+const toTitleCase = (value) =>
+  String(value || '')
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(' ');
+
+const humanizeToken = (value) => toTitleCase(String(value || '').replace(/[_-]+/g, ' ').trim());
+
+const getPerformedBy = (alert) => humanizeToken(alert?.actor_type || 'system');
+
+const getReference = (alert) => alert?.entity_ref || alert?.latest_event_ref || '';
+
 const buildAlertQuery = ({
   status,
   severity,
@@ -74,12 +87,12 @@ const mapAlertResponse = (alert) => ({
   title: alert.title || '',
   message: alert.message || '',
   eventType: alert.event_type || '',
-  actorType: alert.actor_type || '',
-  actorId: alert.actor_id_str || '',
+  performedBy: getPerformedBy(alert),
   brokerId: alert.broker_id_str || '',
   customerId: alert.customer_id_str || '',
   entityType: alert.entity_type || '',
   entityRef: alert.entity_ref || '',
+  reference: getReference(alert),
   latestEventRef: alert.latest_event_ref || '',
   requestId: alert.request_id || '',
   amountDelta: Number(alert.amount_delta || 0),

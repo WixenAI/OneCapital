@@ -1,12 +1,14 @@
-const BROKERAGE_PERCENT = 0.08; // 0.08% per side
+const BROKERAGE_PERCENT = 0; // No runtime fallback; prefer stored broker-managed brokerage.
 const toNumber = (value, fallback = 0) => {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
 };
-const hasNumber = (value) => Number.isFinite(Number(value));
-const hasPositiveNumber = (value) => {
+const hasNumber = (value) =>
+  value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
+const hasNonNegativeNumber = (value) => {
+  if (value === null || value === undefined || value === '') return false;
   const n = Number(value);
-  return Number.isFinite(n) && n > 0;
+  return Number.isFinite(n) && n >= 0;
 };
 
 /**
@@ -30,9 +32,9 @@ export function calculateOpenPnL({
   const currentValue = last * quantity;
   const rate = toNumber(brokeragePercent) / 100;
 
-  const brokerageEntryResolved = hasPositiveNumber(entryBrokerage)
+  const brokerageEntryResolved = hasNonNegativeNumber(entryBrokerage)
     ? toNumber(entryBrokerage)
-    : hasPositiveNumber(brokerageEntry)
+    : hasNonNegativeNumber(brokerageEntry)
       ? toNumber(brokerageEntry)
       : entryValue * rate;
 
@@ -66,18 +68,18 @@ export function calculateClosedPnL({
   const exitValue = exit * quantity;
   const rate = toNumber(brokeragePercent) / 100;
 
-  let brokerageEntryResolved = hasPositiveNumber(entryBrokerage) ? toNumber(entryBrokerage) : entryValue * rate;
-  let brokerageExitResolved = hasPositiveNumber(exitBrokerage) ? toNumber(exitBrokerage) : exitValue * rate;
+  let brokerageEntryResolved = hasNonNegativeNumber(entryBrokerage) ? toNumber(entryBrokerage) : entryValue * rate;
+  let brokerageExitResolved = hasNonNegativeNumber(exitBrokerage) ? toNumber(exitBrokerage) : exitValue * rate;
   let totalBrokerageResolved = brokerageEntryResolved + brokerageExitResolved;
 
   if (hasNumber(totalBrokerage)) {
     totalBrokerageResolved = toNumber(totalBrokerage);
-    if (!hasPositiveNumber(entryBrokerage) && !hasPositiveNumber(exitBrokerage)) {
+    if (!hasNonNegativeNumber(entryBrokerage) && !hasNonNegativeNumber(exitBrokerage)) {
       brokerageEntryResolved = totalBrokerageResolved / 2;
       brokerageExitResolved = totalBrokerageResolved / 2;
-    } else if (hasPositiveNumber(entryBrokerage) && !hasPositiveNumber(exitBrokerage)) {
+    } else if (hasNonNegativeNumber(entryBrokerage) && !hasNonNegativeNumber(exitBrokerage)) {
       brokerageExitResolved = totalBrokerageResolved - brokerageEntryResolved;
-    } else if (!hasPositiveNumber(entryBrokerage) && hasPositiveNumber(exitBrokerage)) {
+    } else if (!hasNonNegativeNumber(entryBrokerage) && hasNonNegativeNumber(exitBrokerage)) {
       brokerageEntryResolved = totalBrokerageResolved - brokerageExitResolved;
     }
   }
@@ -110,6 +112,7 @@ export function calculateBrokerage(turnover, brokeragePercent = BROKERAGE_PERCEN
  * Shared P&L utility helpers (extracted from Orders.jsx / OrderDetailSheet.jsx)
  */
 const readNumber = (value) => {
+  if (value === null || value === undefined || value === '') return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
 };
@@ -152,13 +155,16 @@ export function resolveOrderPnl({ order, isClosed, ltp }) {
   const qty = toNumber(order?.quantity, 0);
   const entryPrice = getEffectiveEntryPrice(order);
   const { entry: entryBrokerage, exit: exitBrokerage, total: totalBrokerage } = getOrderBrokerage(order);
+  const openEntryBrokerage = hasNonNegativeNumber(entryBrokerage) ? entryBrokerage : totalBrokerage;
 
   if (!isClosed) {
-    // Do NOT use stored entryBrokerage for open positions: it was calculated at order
-    // placement time and is never updated when lots are added via ModifyOrderSheet.
-    // Recalculating from current entryValue × rate ensures the correct amount for
-    // the current lot count. For unmodified orders the result is identical.
-    return calculateOpenPnL({ side, avgPrice: entryPrice, ltp, qty });
+    return calculateOpenPnL({
+      side,
+      avgPrice: entryPrice,
+      ltp,
+      qty,
+      entryBrokerage: openEntryBrokerage,
+    });
   }
 
   const exitPrice = getEffectiveExitPrice(order, ltp);

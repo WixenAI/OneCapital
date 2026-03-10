@@ -224,6 +224,11 @@ const WithdrawalRequests = () => {
                     </div>
                     <div className="text-right">
                       <p className="text-sm sm:text-base font-bold">₹{(request.amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</p>
+                      {request.netCash !== null && request.netCash !== undefined && (
+                        <p className={`text-[10px] font-medium mt-0.5 ${request.netCash >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+                          Net Cash: {request.netCash >= 0 ? '+' : ''}₹{toFiniteNumber(request.netCash).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                        </p>
+                      )}
                       <div className="flex items-center justify-end gap-1 mt-0.5">
                         <span className="material-symbols-outlined text-amber-500 text-[12px]">schedule</span>
                         <p className="text-[10px] text-[#617589]">{request.time || (request.createdAt ? new Date(request.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '')}</p>

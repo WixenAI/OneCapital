@@ -6,11 +6,18 @@ import CustomerModel from '../../Model/Auth/CustomerModel.js';
 import FundModel from '../../Model/FundManagement/FundModel.js';
 import WithdrawalRequestModel from '../../Model/FundManagement/WithdrawalRequestModel.js';
 import { writeAuditSuccess } from '../../Utils/AuditLogger.js';
+import { resolveCurrentWeeklyBoundary } from '../../Utils/weeklySettlement.js';
 
 const toNumber = (value) => {
   const n = Number(value);
   return Number.isFinite(n) ? n : 0;
 };
+
+const formatCurrency = (value) =>
+  toNumber(value).toLocaleString('en-IN', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
 
 const getIstNow = () => new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
 
@@ -97,9 +104,32 @@ const getWithdrawals = asyncHandler(async (req, res) => {
   ]);
 
   const customerNameMap = await hydrateCustomerNames(withdrawals);
-  const response = withdrawals.map((withdrawal) =>
-    mapWithdrawalResponse(withdrawal, customerNameMap[withdrawal.customer_id_str])
-  );
+
+  // Batch-fetch fund records to compute boundary-filtered net cash per customer.
+  const uniqueCustomerIds = [...new Set(withdrawals.map((w) => w.customer_id_str).filter(Boolean))];
+  const funds = await FundModel.find({
+    customer_id_str: { $in: uniqueCustomerIds },
+    broker_id_str: brokerIdStr,
+  }).select('customer_id_str transactions');
+
+  const nowUtc = new Date();
+  const netCashMap = {};
+  for (const fund of funds) {
+    const boundary = resolveCurrentWeeklyBoundary({ transactions: fund.transactions || [], nowUtc });
+    const netCash = (fund.transactions || [])
+      .filter((t) => {
+        const ts = t.timestamp ? new Date(t.timestamp) : null;
+        return ts && ts >= boundary.boundaryStartUtc
+          && (t.type === 'realized_profit' || t.type === 'realized_loss');
+      })
+      .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+    netCashMap[fund.customer_id_str] = Number(netCash.toFixed(2));
+  }
+
+  const response = withdrawals.map((withdrawal) => ({
+    ...mapWithdrawalResponse(withdrawal, customerNameMap[withdrawal.customer_id_str]),
+    netCash: netCashMap[withdrawal.customer_id_str] ?? null,
+  }));
 
   res.status(200).json({
     success: true,
@@ -153,11 +183,13 @@ const approveWithdrawal = asyncHandler(async (req, res) => {
     broker_id_str: brokerIdStr,
   };
 
-  // Deduct from Net Cash (pnl_balance) only.
+  // Record withdrawal in the fund ledger.
+  // pnl_balance is a cumulative realized P&L counter managed by trade closes only —
+  // withdrawals do not deduct from it. Withdrawable eligibility was already verified
+  // against the boundary-filtered realizedPnlThisWeek when the customer made the request.
   const updatedFund = await FundModel.findOneAndUpdate(
-    { ...fundQuery, pnl_balance: { $gte: amount } },
+    fundQuery,
     {
-      $inc: { pnl_balance: -amount },
       $set: { last_calculated_at: now },
       $push: {
         transactions: {
@@ -174,12 +206,9 @@ const approveWithdrawal = asyncHandler(async (req, res) => {
   );
 
   if (!updatedFund) {
-    const liveFund = await FundModel.findOne(fundQuery).select('pnl_balance');
-    return res.status(400).json({
+    return res.status(404).json({
       success: false,
-      message: 'Insufficient net cash available to approve this withdrawal.',
-      availableNetCash: toNumber(liveFund?.pnl_balance),
-      requested: amount,
+      message: 'Customer fund record not found.',
     });
   }
 
@@ -190,15 +219,18 @@ const approveWithdrawal = asyncHandler(async (req, res) => {
   withdrawal.approved_amount = amount;
   withdrawal.utr_number = transactionId || '';
   await withdrawal.save();
-  const beforePnlBalance = toNumber(updatedFund.pnl_balance) + amount;
-  const afterPnlBalance = toNumber(updatedFund.pnl_balance);
+  const withdrawalRef = withdrawal.request_ref || withdrawal._id?.toString() || '';
+  const approvalNoteParts = [`Approved amount: ${formatCurrency(amount)}.`];
+  if (transactionId) {
+    approvalNoteParts.push(`Transfer reference: ${transactionId}.`);
+  }
 
   await writeAuditSuccess({
     req,
     type: 'transaction',
     eventType: 'WITHDRAWAL_APPROVE',
     category: 'funds',
-    message: `Broker approved withdrawal for customer ${withdrawal.customer_id_str}`,
+    message: `Withdrawal request ${withdrawalRef} for customer ${withdrawal.customer_id_str} was approved by broker.`,
     target: {
       type: 'customer',
       id: withdrawal.customer_id,
@@ -207,7 +239,7 @@ const approveWithdrawal = asyncHandler(async (req, res) => {
     entity: {
       type: 'withdrawal_request',
       id: withdrawal._id,
-      ref: withdrawal.request_ref || withdrawal._id?.toString(),
+      ref: withdrawalRef,
     },
     broker: {
       broker_id: brokerId,
@@ -218,16 +250,10 @@ const approveWithdrawal = asyncHandler(async (req, res) => {
       customer_id_str: withdrawal.customer_id_str,
     },
     amountDelta: -amount,
-    fundBefore: {
-      pnlBalance: beforePnlBalance,
-    },
-    fundAfter: {
-      pnlBalance: afterPnlBalance,
-    },
-    note: 'Withdrawal approved by broker',
+    note: approvalNoteParts.join(' '),
     metadata: {
       transactionId: transactionId || '',
-      requestRef: withdrawal.request_ref || '',
+      requestRef: withdrawalRef,
       status: withdrawal.status,
     },
   });
@@ -273,13 +299,17 @@ const rejectWithdrawal = asyncHandler(async (req, res) => {
   withdrawal.reviewed_at = new Date();
   withdrawal.rejection_reason = reason || '';
   await withdrawal.save();
+  const withdrawalRef = withdrawal.request_ref || withdrawal._id?.toString() || '';
+  const rejectionNote = reason
+    ? `Reason: ${reason}.`
+    : 'Rejected during broker review.';
 
   await writeAuditSuccess({
     req,
     type: 'transaction',
     eventType: 'WITHDRAWAL_REJECT',
     category: 'funds',
-    message: `Broker rejected withdrawal for customer ${withdrawal.customer_id_str}`,
+    message: `Withdrawal request ${withdrawalRef} for customer ${withdrawal.customer_id_str} was rejected by broker.`,
     target: {
       type: 'customer',
       id: withdrawal.customer_id,
@@ -288,7 +318,7 @@ const rejectWithdrawal = asyncHandler(async (req, res) => {
     entity: {
       type: 'withdrawal_request',
       id: withdrawal._id,
-      ref: withdrawal.request_ref || withdrawal._id?.toString(),
+      ref: withdrawalRef,
     },
     broker: {
       broker_id: brokerId,
@@ -298,12 +328,12 @@ const rejectWithdrawal = asyncHandler(async (req, res) => {
       customer_id: withdrawal.customer_id,
       customer_id_str: withdrawal.customer_id_str,
     },
-    note: reason || 'Withdrawal rejected by broker',
+    note: rejectionNote,
     metadata: {
       previousStatus,
       newStatus: withdrawal.status,
       amount: toNumber(withdrawal.amount),
-      requestRef: withdrawal.request_ref || '',
+      requestRef: withdrawalRef,
     },
   });
 
@@ -403,7 +433,7 @@ const createWithdrawalRequest = async (customerId, brokerId, amount, bankAccount
     type: 'transaction',
     eventType: 'WITHDRAWAL_REQUEST_CREATE',
     category: 'funds',
-    message: `Customer created withdrawal request ${withdrawal._id?.toString()}`,
+    message: `Withdrawal request ${withdrawal.request_ref || withdrawal._id?.toString()} was submitted by customer ${customerId}.`,
     source: 'api',
     actor: {
       type: 'customer',
@@ -430,7 +460,7 @@ const createWithdrawalRequest = async (customerId, brokerId, amount, bankAccount
       customer_id_str: customerId,
     },
     amountDelta: -parsedAmount,
-    note: 'Withdrawal request created',
+    note: `Requested amount: ${formatCurrency(parsedAmount)}. Submitted for broker approval.`,
     metadata: {
       status: withdrawal.status,
       requestRef: withdrawal.request_ref || '',

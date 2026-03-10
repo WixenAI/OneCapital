@@ -1,15 +1,15 @@
 import ClientPricingModel from '../Model/Trading/ClientPricingModel.js';
 
-export const DEFAULT_CLIENT_PRICING = Object.freeze({
+export const INITIAL_CLIENT_PRICING = Object.freeze({
   brokerage: {
-    cash_future: {
-      mode: 'PERCENT',
-      buy: 0.08,
-      sell: 0.08,
+    cash: {
+      percent: 0.08,
     },
-    options: {
-      buy_per_lot: 2,
-      sell_per_lot: 2,
+    future: {
+      percent: 0.08,
+    },
+    option: {
+      per_lot: 2,
     },
   },
   spread: {
@@ -29,47 +29,63 @@ const round2 = (value) => Number(toNumber(value).toFixed(2));
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
-const normalizeMode = (value) => {
-  const mode = String(value || '').toUpperCase();
-  return mode === 'FLAT_PER_UNIT' ? 'FLAT_PER_UNIT' : 'PERCENT';
-};
-
 const normalizeSide = (side) => (String(side || 'BUY').toUpperCase() === 'SELL' ? 'SELL' : 'BUY');
 
+const pickLegacySymmetricRate = (values, fallback) => {
+  const finite = values
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value));
+  if (finite.length === 0) return fallback;
+  return Math.max(...finite);
+};
+
 const normalizeSpread = (spread = {}) => ({
-  cash: clamp(toNumber(spread.cash, DEFAULT_CLIENT_PRICING.spread.cash), -1000, 1000),
-  future: clamp(toNumber(spread.future, DEFAULT_CLIENT_PRICING.spread.future), -1000, 1000),
-  option: clamp(toNumber(spread.option, DEFAULT_CLIENT_PRICING.spread.option), -1000, 1000),
-  mcx: clamp(toNumber(spread.mcx, DEFAULT_CLIENT_PRICING.spread.mcx), -1000, 1000),
+  cash: clamp(toNumber(spread.cash, INITIAL_CLIENT_PRICING.spread.cash), -1000, 1000),
+  future: clamp(toNumber(spread.future, INITIAL_CLIENT_PRICING.spread.future), -1000, 1000),
+  option: clamp(toNumber(spread.option, INITIAL_CLIENT_PRICING.spread.option), -1000, 1000),
+  mcx: clamp(toNumber(spread.mcx, INITIAL_CLIENT_PRICING.spread.mcx), -1000, 1000),
 });
 
 const normalizeBrokerage = (brokerage = {}) => {
-  const cashFuture = brokerage.cash_future || {};
-  const optionRules = brokerage.options || {};
-  const mode = normalizeMode(cashFuture.mode);
+  const legacyCashFuture = brokerage.cash_future || {};
+  const legacyOptions = brokerage.options || {};
+
+  const legacyTurnoverPercent = pickLegacySymmetricRate(
+    [legacyCashFuture.buy, legacyCashFuture.sell],
+    INITIAL_CLIENT_PRICING.brokerage.cash.percent
+  );
+  const legacyOptionPerLot = pickLegacySymmetricRate(
+    [legacyOptions.buy_per_lot, legacyOptions.sell_per_lot],
+    INITIAL_CLIENT_PRICING.brokerage.option.per_lot
+  );
 
   return {
-    cash_future: {
-      mode,
-      buy: clamp(
-        toNumber(cashFuture.buy, DEFAULT_CLIENT_PRICING.brokerage.cash_future.buy),
+    cash: {
+      percent: clamp(
+        toNumber(
+          brokerage.cash?.percent,
+          legacyTurnoverPercent
+        ),
         0,
-        mode === 'PERCENT' ? 100 : 100000
-      ),
-      sell: clamp(
-        toNumber(cashFuture.sell, DEFAULT_CLIENT_PRICING.brokerage.cash_future.sell),
-        0,
-        mode === 'PERCENT' ? 100 : 100000
+        100
       ),
     },
-    options: {
-      buy_per_lot: clamp(
-        toNumber(optionRules.buy_per_lot, DEFAULT_CLIENT_PRICING.brokerage.options.buy_per_lot),
+    future: {
+      percent: clamp(
+        toNumber(
+          brokerage.future?.percent,
+          legacyTurnoverPercent
+        ),
         0,
-        100000
+        100
       ),
-      sell_per_lot: clamp(
-        toNumber(optionRules.sell_per_lot, DEFAULT_CLIENT_PRICING.brokerage.options.sell_per_lot),
+    },
+    option: {
+      per_lot: clamp(
+        toNumber(
+          brokerage.option?.per_lot ?? brokerage.option?.perLot,
+          legacyOptionPerLot
+        ),
         0,
         100000
       ),
@@ -82,31 +98,67 @@ export const normalizeClientPricing = (pricing = {}) => ({
   spread: normalizeSpread(pricing.spread),
 });
 
-export const getClientPricingConfig = async ({ brokerIdStr, customerIdStr }) => {
+const buildSeedPricingDoc = ({ updatedBy } = {}) => {
+  const normalized = normalizeClientPricing(INITIAL_CLIENT_PRICING);
+  return {
+    brokerage: normalized.brokerage,
+    spread: normalized.spread,
+    ...(updatedBy ? { updated_by: updatedBy } : {}),
+  };
+};
+
+const hasModernBrokerageShape = (brokerage = {}) =>
+  brokerage?.cash?.percent != null &&
+  brokerage?.future?.percent != null &&
+  brokerage?.option?.per_lot != null;
+
+export const ensureClientPricingConfig = async ({ brokerIdStr, customerIdStr, updatedBy } = {}) => {
   if (!brokerIdStr || !customerIdStr) {
-    return normalizeClientPricing(DEFAULT_CLIENT_PRICING);
+    return normalizeClientPricing(INITIAL_CLIENT_PRICING);
   }
 
-  const doc = await ClientPricingModel.findOne({
+  const query = {
     broker_id_str: String(brokerIdStr),
     customer_id_str: String(customerIdStr),
-  }).lean();
+  };
 
-  if (!doc) return normalizeClientPricing(DEFAULT_CLIENT_PRICING);
+  let doc = await ClientPricingModel.findOne(query);
 
-  return normalizeClientPricing({
+  if (!doc) {
+    doc = await ClientPricingModel.create({
+      broker_id_str: query.broker_id_str,
+      customer_id_str: query.customer_id_str,
+      ...buildSeedPricingDoc({ updatedBy }),
+    });
+    return normalizeClientPricing({
+      brokerage: doc.brokerage,
+      spread: doc.spread,
+    });
+  }
+
+  const normalized = normalizeClientPricing({
     brokerage: doc.brokerage,
     spread: doc.spread,
   });
+
+  if (!hasModernBrokerageShape(doc.brokerage || {})) {
+    doc.brokerage = normalized.brokerage;
+    doc.spread = normalized.spread;
+    if (updatedBy) doc.updated_by = updatedBy;
+    await doc.save();
+  }
+
+  return normalized;
 };
+
+export const getClientPricingConfig = async ({ brokerIdStr, customerIdStr, updatedBy } = {}) =>
+  ensureClientPricingConfig({ brokerIdStr, customerIdStr, updatedBy });
 
 export const inferPricingBucket = ({ exchange, segment, symbol, orderType }) => {
   const ex = String(exchange || '').toUpperCase();
   const seg = String(segment || '').toUpperCase();
   const sym = String(symbol || '').toUpperCase();
   const ordType = String(orderType || '').toUpperCase();
-
-  if (ex.includes('MCX') || seg.includes('MCX')) return 'MCX';
 
   const isOption =
     sym.endsWith('CE') ||
@@ -121,16 +173,31 @@ export const inferPricingBucket = ({ exchange, segment, symbol, orderType }) => 
     sym.includes('FUT') ||
     seg.includes('FUT') ||
     seg.includes('NFO') ||
+    seg.includes('BFO') ||
     seg.includes('F&O') ||
     seg === 'FO' ||
-    seg === 'NRML';
+    seg === 'NRML' ||
+    ex.includes('MCX') ||
+    seg.includes('MCX');
   if (isFuture) return 'FUTURE';
 
   return 'CASH';
 };
 
+export const inferSpreadBucket = ({ exchange, segment, symbol, orderType }) => {
+  const ex = String(exchange || '').toUpperCase();
+  const seg = String(segment || '').toUpperCase();
+
+  if (ex.includes('MCX') || seg.includes('MCX')) return 'MCX';
+
+  const pricingBucket = inferPricingBucket({ exchange, segment, symbol, orderType });
+  if (pricingBucket === 'OPTION') return 'OPTION';
+  if (pricingBucket === 'FUTURE') return 'FUTURE';
+  return 'CASH';
+};
+
 export const getSpreadForBucket = (pricing, bucket) => {
-  const spread = pricing?.spread || DEFAULT_CLIENT_PRICING.spread;
+  const spread = pricing?.spread || INITIAL_CLIENT_PRICING.spread;
   const key = String(bucket || 'CASH').toUpperCase();
   if (key === 'MCX') return toNumber(spread.mcx, 0);
   if (key === 'OPTION') return toNumber(spread.option, 0);
@@ -179,12 +246,11 @@ export const calculateBrokerageForLeg = ({
   const price = Math.max(0, toNumber(effectivePrice, 0));
   const resolvedLots = resolveLots({ lots, quantity: qty, lotSize });
 
-  // Options use fixed per-lot brokerage.
   if (normalizedBucket === 'OPTION') {
-    const perLot =
-      normalizedSide === 'BUY'
-        ? toNumber(pricing?.brokerage?.options?.buy_per_lot, DEFAULT_CLIENT_PRICING.brokerage.options.buy_per_lot)
-        : toNumber(pricing?.brokerage?.options?.sell_per_lot, DEFAULT_CLIENT_PRICING.brokerage.options.sell_per_lot);
+    const perLot = toNumber(
+      pricing?.brokerage?.option?.per_lot,
+      INITIAL_CLIENT_PRICING.brokerage.option.per_lot
+    );
 
     return {
       amount: round2(perLot * resolvedLots),
@@ -195,30 +261,56 @@ export const calculateBrokerageForLeg = ({
     };
   }
 
-  // Cash/Future/MCX use cash_future rules.
-  const cfMode = normalizeMode(pricing?.brokerage?.cash_future?.mode);
-  const sideRate =
-    normalizedSide === 'BUY'
-      ? toNumber(pricing?.brokerage?.cash_future?.buy, DEFAULT_CLIENT_PRICING.brokerage.cash_future.buy)
-      : toNumber(pricing?.brokerage?.cash_future?.sell, DEFAULT_CLIENT_PRICING.brokerage.cash_future.sell);
-
-  if (cfMode === 'FLAT_PER_UNIT') {
-    return {
-      amount: round2(qty * sideRate),
-      mode: 'FLAT_PER_UNIT',
-      rate: round2(sideRate),
-      basis: round2(qty),
-      side: normalizedSide,
-    };
-  }
+  const rate =
+    normalizedBucket === 'FUTURE' || normalizedBucket === 'MCX'
+      ? toNumber(
+          pricing?.brokerage?.future?.percent,
+          INITIAL_CLIENT_PRICING.brokerage.future.percent
+        )
+      : toNumber(
+          pricing?.brokerage?.cash?.percent,
+          INITIAL_CLIENT_PRICING.brokerage.cash.percent
+        );
 
   const turnover = qty * price;
   return {
-    amount: round2((turnover * sideRate) / 100),
+    amount: round2((turnover * rate) / 100),
     mode: 'PERCENT',
-    rate: round2(sideRate),
+    rate: round2(rate),
     basis: round2(turnover),
     side: normalizedSide,
   };
 };
 
+export const buildEntryBrokerageSnapshot = ({
+  pricing,
+  bucket,
+  side,
+  quantity,
+  lotSize,
+  lots,
+  effectivePrice,
+}) => {
+  const entry = calculateBrokerageForLeg({
+    pricing,
+    bucket,
+    side,
+    quantity,
+    lotSize,
+    lots,
+    effectivePrice,
+  });
+  const amount = round2(entry.amount);
+
+  return {
+    amount,
+    breakdown: {
+      entry: {
+        ...entry,
+        amount,
+      },
+      total: amount,
+      pricingBucket: String(bucket || 'CASH').toUpperCase(),
+    },
+  };
+};

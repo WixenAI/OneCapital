@@ -8,18 +8,14 @@ const ClientPricingSchema = new Schema(
     customer_id_str: { type: String, required: true, index: true },
 
     brokerage: {
-      cash_future: {
-        mode: {
-          type: String,
-          enum: ['PERCENT', 'FLAT_PER_UNIT'],
-          default: 'PERCENT',
-        },
-        buy: { type: Number, default: 0.08 },
-        sell: { type: Number, default: 0.08 },
+      cash: {
+        percent: { type: Number, default: 0.08 },
       },
-      options: {
-        buy_per_lot: { type: Number, default: 2 },
-        sell_per_lot: { type: Number, default: 2 },
+      future: {
+        percent: { type: Number, default: 0.08 },
+      },
+      option: {
+        per_lot: { type: Number, default: 2 },
       },
     },
 

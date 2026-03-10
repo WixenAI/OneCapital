@@ -61,6 +61,8 @@ const Logs = () => {
   const [loading, setLoading] = useState(true);
   const [clearing, setClearing] = useState(false);
   const [error, setError] = useState(null);
+  const [showClearMenu, setShowClearMenu] = useState(false);
+  const [clearConfirm, setClearConfirm] = useState(null);
   const [logs, setLogs] = useState([]);
   const [alerts, setAlerts] = useState([]);
   const [alertStats, setAlertStats] = useState(null);
@@ -75,8 +77,15 @@ const Logs = () => {
     { key: 'all', label: 'All' },
     { key: 'security', label: 'Security' },
     { key: 'transaction', label: 'Transactions' },
+    { key: 'withdrawals', label: 'Withdrawals' },
     { key: 'data', label: 'Data' },
     { key: 'system', label: 'System' },
+  ];
+
+  const WITHDRAWAL_EVENT_TYPES = [
+    'WITHDRAWAL_REQUEST_CREATE',
+    'WITHDRAWAL_APPROVE',
+    'WITHDRAWAL_REJECT',
   ];
 
   const asParam = (value) => {
@@ -90,15 +99,18 @@ const Logs = () => {
     setError(null);
 
     try {
+      const isWithdrawalsTab = activeTab === 'withdrawals';
       const response = await adminApi.getLogs({
-        type: activeTab !== 'all' ? activeTab : undefined,
+        type: !isWithdrawalsTab && activeTab !== 'all' ? activeTab : undefined,
         search: asParam(searchQuery),
         page: currentPage,
         limit: 50,
-        category: logFilters.category !== 'all' ? logFilters.category : undefined,
+        category: isWithdrawalsTab ? 'funds' : (logFilters.category !== 'all' ? logFilters.category : undefined),
         status: logFilters.status !== 'all' ? logFilters.status : undefined,
         source: logFilters.source !== 'all' ? logFilters.source : undefined,
-        eventType: asParam(logFilters.eventType),
+        eventType: isWithdrawalsTab
+          ? 'WITHDRAWAL_*'
+          : asParam(logFilters.eventType),
         brokerId: asParam(logFilters.brokerId),
         customerId: asParam(logFilters.customerId),
         minAmountDelta: asParam(logFilters.minAmountDelta),
@@ -181,15 +193,12 @@ const Logs = () => {
     setError(null);
   };
 
-  const clearAllLogs = async () => {
-    const confirmed = window.confirm('Clear all logs and alerts from database? This action cannot be undone.');
-    if (!confirmed) return;
-
+  const executeClearLogs = async (period) => {
     setClearing(true);
     setError(null);
-
+    setClearConfirm(null);
     try {
-      await adminApi.clearLogs('all');
+      await adminApi.clearLogs('all', period);
       setLogs([]);
       setAlerts([]);
       setAlertStats(null);
@@ -252,6 +261,8 @@ const Logs = () => {
     const sign = n > 0 ? '+' : '';
     return `${sign}${n.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
   };
+
+  const hasNumber = (value) => Number.isFinite(Number(value));
 
   const renderFilterPanel = () => {
     if (!showFilters) return null;
@@ -448,6 +459,9 @@ const Logs = () => {
 
   return (
     <div className="relative flex h-full min-h-screen min-h-[100dvh] w-full flex-col max-w-md mx-auto bg-[#f6f7f8] overflow-x-hidden pb-20 sm:pb-24">
+      {showClearMenu && (
+        <div className="fixed inset-0 z-40" onClick={() => setShowClearMenu(false)} />
+      )}
       <header className="sticky top-0 z-20 bg-white border-b border-gray-200 px-3 sm:px-4 py-2.5 sm:py-3 shadow-sm">
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2.5 sm:gap-3">
@@ -473,14 +487,49 @@ const Logs = () => {
             >
               <span className="material-symbols-outlined text-[20px] sm:text-[22px]">refresh</span>
             </button>
-            <button
-              onClick={clearAllLogs}
-              disabled={clearing || loading}
-              className="flex items-center justify-center size-9 sm:size-10 rounded-full hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              title="Clear logs"
-            >
-              <span className="material-symbols-outlined text-[20px] sm:text-[22px] text-red-600">delete_sweep</span>
-            </button>
+            <div className="relative">
+              <button
+                onClick={() => setShowClearMenu((prev) => !prev)}
+                disabled={clearing || loading}
+                className="flex items-center justify-center size-9 sm:size-10 rounded-full hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                title="Clear logs"
+              >
+                <span className="material-symbols-outlined text-[20px] sm:text-[22px] text-red-600">delete_sweep</span>
+              </button>
+              {showClearMenu && (
+                <div className="absolute right-0 top-10 z-50 w-52 rounded-xl bg-white shadow-lg border border-gray-200 overflow-hidden">
+                  <div className="px-3 py-2 border-b border-gray-100">
+                    <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">Clear Logs</p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setShowClearMenu(false);
+                      setClearConfirm({ period: 'last_week', label: 'Clear Previous Week Logs', description: 'All audit logs and alerts older than 7 days will be permanently deleted from the database.' });
+                    }}
+                    className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left hover:bg-amber-50 transition-colors"
+                  >
+                    <span className="material-symbols-outlined text-amber-600 text-[18px]">history</span>
+                    <div>
+                      <p className="text-xs font-semibold text-gray-800">Clear Last Week</p>
+                      <p className="text-[10px] text-gray-500">Older than 7 days</p>
+                    </div>
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowClearMenu(false);
+                      setClearConfirm({ period: 'all', label: 'Clear All Logs', description: 'Every audit log and alert in the database will be permanently deleted. This cannot be undone.' });
+                    }}
+                    className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left hover:bg-red-50 transition-colors border-t border-gray-100"
+                  >
+                    <span className="material-symbols-outlined text-red-600 text-[18px]">delete_forever</span>
+                    <div>
+                      <p className="text-xs font-semibold text-red-700">Clear All Logs</p>
+                      <p className="text-[10px] text-red-400">Deletes everything</p>
+                    </div>
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
@@ -566,14 +615,23 @@ const Logs = () => {
               <span className="material-symbols-outlined text-[64px] text-gray-300 mb-4">receipt_long</span>
               <h3 className="text-lg font-semibold text-gray-900 mb-2">No Logs Found</h3>
               <p className="text-gray-500 text-center text-sm">
-                {searchQuery ? 'Try a different search term' : 'Audit events will appear here'}
+                {searchQuery
+                  ? 'Try a different search term'
+                  : activeTab === 'withdrawals'
+                    ? 'No withdrawal logs found'
+                    : 'Audit events will appear here'}
               </p>
             </div>
           ) : (
             <div className="flex flex-col gap-2">
               {logs.map((log) => {
                 const metaItems = formatMetaItems(log.metadata);
-                const eventLabel = humanizeToken(log.eventType || 'log_event');
+                const eventLabel = log.actionLabel || humanizeToken(log.eventType || 'log_event');
+                const previousDepositedCash = log?.fundBefore?.depositedCash;
+                const newDepositedCash = log?.fundAfter?.depositedCash;
+                const displayReference = log.reference
+                  && log.reference !== log.customerId
+                  && log.reference !== log.brokerId;
 
                 return (
                   <div key={log.id} className="bg-white rounded-xl p-3 sm:p-4 shadow-sm border border-gray-100">
@@ -610,11 +668,18 @@ const Logs = () => {
                     <div className="mt-2 grid grid-cols-2 gap-x-2 gap-y-1 text-[10px] sm:text-xs text-gray-500">
                       {log.brokerId && <p>Broker: {log.brokerId}</p>}
                       {log.customerId && <p>Customer: {log.customerId}</p>}
-                      {log.actorId && <p>Actor: {log.actorId}</p>}
+                      {log.performedBy && <p>Performed By: {log.performedBy}</p>}
+                      {displayReference && <p>Reference: {log.reference}</p>}
                       {log.amountDelta !== 0 && (
                         <p className={log.amountDelta > 0 ? 'text-green-600' : 'text-red-600'}>
                           Amount Change: {formatAmount(log.amountDelta)}
                         </p>
+                      )}
+                      {hasNumber(previousDepositedCash) && (
+                        <p>Previous Cash: {formatAmount(previousDepositedCash)}</p>
+                      )}
+                      {hasNumber(newDepositedCash) && (
+                        <p>New Cash: {formatAmount(newDepositedCash)}</p>
                       )}
                     </div>
 
@@ -681,6 +746,8 @@ const Logs = () => {
                     {alert.brokerId && <p>Broker: {alert.brokerId}</p>}
                     {alert.customerId && <p>Customer: {alert.customerId}</p>}
                     {alert.eventType && <p>Event: {humanizeToken(alert.eventType)}</p>}
+                    {alert.performedBy && <p>Performed By: {alert.performedBy}</p>}
+                    {alert.reference && <p>Reference: {alert.reference}</p>}
                     {alert.amountDelta !== 0 && (
                       <p className={alert.amountDelta > 0 ? 'text-green-600' : 'text-red-600'}>
                         Amount Change: {formatAmount(alert.amountDelta)}
@@ -715,6 +782,64 @@ const Logs = () => {
           </div>
         )}
       </main>
+
+      {/* Clear Logs Confirmation Modal */}
+      {clearConfirm && (
+        <div
+          className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
+          onClick={() => setClearConfirm(null)}
+        >
+          <div
+            className="bg-white w-full sm:max-w-sm rounded-t-2xl sm:rounded-2xl shadow-xl overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className={`px-5 pt-5 pb-4 border-b ${clearConfirm.period === 'all' ? 'bg-red-50 border-red-100' : 'bg-amber-50 border-amber-100'}`}>
+              <div className="flex items-start gap-3">
+                <div className={`size-11 rounded-full flex items-center justify-center shrink-0 mt-0.5 ${clearConfirm.period === 'all' ? 'bg-red-100' : 'bg-amber-100'}`}>
+                  <span className={`material-symbols-outlined text-[22px] ${clearConfirm.period === 'all' ? 'text-red-600' : 'text-amber-600'}`}>
+                    {clearConfirm.period === 'all' ? 'delete_forever' : 'history'}
+                  </span>
+                </div>
+                <div>
+                  <p className="text-[#111418] font-bold text-base leading-snug">{clearConfirm.label}</p>
+                  <p className={`text-xs font-medium mt-0.5 ${clearConfirm.period === 'all' ? 'text-red-700' : 'text-amber-700'}`}>
+                    This action cannot be undone
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="px-5 py-4">
+              <p className="text-sm text-gray-600">{clearConfirm.description}</p>
+              <div className={`mt-3 rounded-xl px-4 py-3 ${clearConfirm.period === 'all' ? 'bg-red-50 border border-red-100' : 'bg-amber-50 border border-amber-100'}`}>
+                <div className="flex items-start gap-2">
+                  <span className={`material-symbols-outlined text-[14px] mt-0.5 shrink-0 ${clearConfirm.period === 'all' ? 'text-red-500' : 'text-amber-500'}`}>warning</span>
+                  <p className={`text-xs font-medium ${clearConfirm.period === 'all' ? 'text-red-700' : 'text-amber-700'}`}>
+                    {clearConfirm.period === 'all'
+                      ? 'All audit events and alerts will be permanently removed from the database.'
+                      : 'Audit events and alerts older than 7 days will be permanently removed.'}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="px-5 pb-6 pt-1 flex gap-3">
+              <button
+                onClick={() => setClearConfirm(null)}
+                className="flex-1 h-11 bg-gray-100 text-[#111418] rounded-xl font-bold text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => executeClearLogs(clearConfirm.period)}
+                className={`flex-1 h-11 text-white rounded-xl font-bold text-sm ${clearConfirm.period === 'all' ? 'bg-red-500 hover:bg-red-600' : 'bg-amber-500 hover:bg-amber-600'}`}
+              >
+                {clearing ? 'Deleting...' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <nav className="fixed bottom-0 w-full max-w-md mx-auto bg-white border-t border-gray-200 z-30">
         <div className="flex justify-around items-center h-14 sm:h-16">

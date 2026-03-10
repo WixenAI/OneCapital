@@ -42,6 +42,9 @@ const OrderConfirmation = () => {
     requiresApproval,
     placedAt,
     status,
+    isModified = false,
+    ltp,
+    newAvgPrice,
   } = data;
 
   const normalizedProduct = String(productType || '').toUpperCase();
@@ -90,10 +93,10 @@ const OrderConfirmation = () => {
               </div>
             </div>
             <h1 className="text-center text-[24px] font-bold leading-tight text-[#155dfc] sm:text-[26px]">
-              Order Placed Successfully!
+              {isModified ? 'Order Modified!' : 'Order Placed Successfully!'}
             </h1>
             <p className="mt-1.5 text-center text-[13px] font-medium leading-[1.45] text-[#6b7280] dark:text-[#9cb7aa] sm:text-[14px]">
-              Your order has been sent to the exchange
+              {isModified ? 'Your order has been updated' : 'Your order has been sent to the exchange'}
             </p>
           </div>
 
@@ -132,9 +135,15 @@ const OrderConfirmation = () => {
                 <p className="text-[15px] font-bold text-[#111827] dark:text-[#e8f3ee]">{Number(quantity || 0)}</p>
               </div>
               <div className="flex items-center justify-between">
-                <p className="text-[13px] font-medium text-[#7b8492] dark:text-[#9cb7aa]">Average Price</p>
-                <p className="text-[15px] font-bold text-[#111827] dark:text-[#e8f3ee]">{displayPrice}</p>
+                <p className="text-[13px] font-medium text-[#7b8492] dark:text-[#9cb7aa]">{isModified ? 'New Avg Price' : 'Average Price'}</p>
+                <p className="text-[15px] font-bold text-[#111827] dark:text-[#e8f3ee]">{formatCurrency(isModified ? newAvgPrice : price)}</p>
               </div>
+              {isModified && ltp != null && (
+                <div className="flex items-center justify-between">
+                  <p className="text-[13px] font-medium text-[#7b8492] dark:text-[#9cb7aa]">LTP at Modification</p>
+                  <p className="text-[15px] font-bold text-[#111827] dark:text-[#e8f3ee]">{formatCurrency(ltp)}</p>
+                </div>
+              )}
               <div className="flex items-center justify-between">
                 <p className="text-[13px] font-medium text-[#7b8492] dark:text-[#9cb7aa]">Segment</p>
                 <p className="text-[15px] font-bold text-[#111827] dark:text-[#e8f3ee]">MIS (Intraday)</p>
@@ -198,9 +207,13 @@ const OrderConfirmation = () => {
     );
   }
 
-  const headline = requiresApproval
-    ? 'CNC Order Placed Successfully,\nAwaiting Broker Approval'
-    : 'Order Placed Successfully';
+  const headline = isModified
+    ? requiresApproval
+      ? 'Order Modified,\nAwaiting Broker Approval'
+      : 'Order Modified Successfully'
+    : requiresApproval
+      ? 'CNC Order Placed Successfully,\nAwaiting Broker Approval'
+      : 'Order Placed Successfully';
 
   return (
     <div className="relative flex h-full min-h-screen w-full flex-col max-w-md mx-auto bg-[#f6f7f8] dark:bg-[#050806] font-['Inter'] overflow-x-hidden">
@@ -271,9 +284,15 @@ const OrderConfirmation = () => {
               </p>
             </div>
             <div className="flex flex-col gap-1 pl-2 text-right">
-              <p className="text-[#617589] text-xs font-medium uppercase tracking-wide">Avg. Price</p>
-              <p className="text-[#111418] dark:text-[#e8f3ee] text-base font-bold leading-normal">{displayPrice}</p>
+              <p className="text-[#617589] text-xs font-medium uppercase tracking-wide">{isModified ? 'New Avg Price' : 'Avg. Price'}</p>
+              <p className="text-[#111418] dark:text-[#e8f3ee] text-base font-bold leading-normal">{formatCurrency(isModified ? newAvgPrice : price)}</p>
             </div>
+            {isModified && ltp != null && (
+              <div className="flex flex-col gap-1 pr-2">
+                <p className="text-[#617589] text-xs font-medium uppercase tracking-wide">LTP at Modification</p>
+                <p className="text-[#111418] dark:text-[#e8f3ee] text-base font-bold leading-normal">{formatCurrency(ltp)}</p>
+              </div>
+            )}
           </div>
         </div>
 
@@ -281,8 +300,9 @@ const OrderConfirmation = () => {
           <div className="mt-6 flex gap-3 px-2 w-full">
             <span className="material-symbols-outlined text-[#617589] text-[20px] shrink-0">info</span>
             <p className="text-[#617589] text-xs font-normal leading-snug">
-              Your CNC order has been placed. The status will be updated upon broker&apos;s action. You can check the
-              status in the order book.
+              {isModified
+                ? 'Your CNC order has been modified. The broker will review the updated lot count. You can check the status in the order book.'
+                : 'Your CNC order has been placed. The status will be updated upon broker\u2019s action. You can check the status in the order book.'}
             </p>
           </div>
         )}

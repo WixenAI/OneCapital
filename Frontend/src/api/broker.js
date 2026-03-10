@@ -366,6 +366,11 @@ const brokerApi = {
     return response.data;
   },
 
+  runCustomerSettlement: async (customerIdStr, payload = {}) => {
+    const response = await api.post(`/broker/settlement/customer/${customerIdStr}/run`, payload);
+    return response.data;
+  },
+
   getWeeklySettlementHistory: async (params = {}) => {
     const response = await api.get('/broker/settlement/weekly/history', { params });
     return response.data;

@@ -42,8 +42,6 @@ const Funds = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [transactions, setTransactions] = useState([]);
-  const [netCashScope, setNetCashScope] = useState('current_week');
-
   const [wallet, setWallet] = useState({
     depositedCash: 0,
     netCash: 0,
@@ -205,10 +203,8 @@ const Funds = () => {
   const saturdayActive = isSaturdayIst();
   const withdrawableNetCash = Math.max(0, Number(wallet.withdrawableNetCash) || 0);
   const withdrawDisabled = loading || withdrawableNetCash <= 0 || !saturdayActive;
-  const currentWeekNetCash = Number(summary.realizedPnlThisWeek) || 0;
-  const displayedNetCash = netCashScope === 'overall'
-    ? Number(wallet.netCash) || 0
-    : currentWeekNetCash;
+  const currentWeekNetCash = Number(wallet.netCash) || 0;
+  const displayedNetCash = currentWeekNetCash;
   const netCashToneClass = displayedNetCash >= 0 ? 'text-[#078838]' : 'text-red-500';
 
   return (
@@ -259,18 +255,9 @@ const Funds = () => {
                 </span>
                 <p className="text-[#617589] dark:text-[#9cb7aa] text-[11px] sm:text-[13px]">Net Cash</p>
               </div>
-              <select
-                value={netCashScope}
-                onChange={(e) => setNetCashScope(e.target.value)}
-                className="h-7 rounded-md border border-gray-200 dark:border-[#22352d] bg-white dark:bg-[#111b17] px-1.5 text-[10px] sm:text-[11px] text-[#617589] dark:text-[#9cb7aa] outline-none"
-                aria-label="Select net cash scope"
-              >
-                <option value="current_week">Current Week</option>
-                <option value="overall">Total Overall</option>
-              </select>
             </div>
             <p className="text-[#617589] dark:text-[#9cb7aa] text-[10px] sm:text-[11px] mb-0.5">
-              {netCashScope === 'overall' ? 'Overall total' : 'Current week'}
+              Net P&amp;L
             </p>
             {loading ? (
               <div className="animate-pulse">

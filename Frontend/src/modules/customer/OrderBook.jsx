@@ -79,7 +79,7 @@ const normalizeRows = (items = []) => {
       can_exit: !!order.can_exit,
       can_view_detail: order.can_view_detail !== false,
       time: timeLabel,
-      jobbin_price: toNumber(order.jobbin_price || 0.08, 0.08),
+      jobbin_price: toNumber(order.jobbin_price, 0),
     };
   });
 };
@@ -355,14 +355,7 @@ const OrderBook = () => {
     }
 
     const liveLtp = Number(ltp ?? order.ltp ?? order.price ?? 0);
-    const jobbing = Number(order.jobbin_price || 0.08);
-    let closedLtp = liveLtp;
-    if (liveLtp > 0 && jobbing > 0) {
-      closedLtp = order.side === 'BUY'
-        ? liveLtp - (liveLtp * (jobbing / 100))
-        : liveLtp + (liveLtp * (jobbing / 100));
-    }
-    closedLtp = Number(closedLtp.toFixed(4));
+    const closedLtp = Number(liveLtp.toFixed(4));
 
     try {
       await customerApi.updateOrder({

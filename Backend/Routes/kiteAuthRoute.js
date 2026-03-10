@@ -306,6 +306,82 @@ import {
   encrypt
 } from '../services/AutoLoginService.js';
 
+// Update active Kite credentials and auto-login secrets
+// POST /api/kite/credentials/update
+// Body: { user_id, kite_password, api_key, api_secret, totp_secret }
+router.post('/credentials/update', async (req, res) => {
+  try {
+    const { user_id, kite_password, api_key, api_secret, totp_secret } = req.body;
+
+    if (!user_id || !kite_password || !api_key || !api_secret || !totp_secret) {
+      return res.status(400).json({
+        success: false,
+        error: 'user_id, kite_password, api_key, api_secret, and totp_secret are required'
+      });
+    }
+
+    const activeCredential = await KiteCredential
+      .findOne({ is_active: true })
+      .sort({ updatedAt: -1, createdAt: -1 });
+
+    const update = {
+      user_id: String(user_id).trim(),
+      api_key: String(api_key).trim(),
+      api_secret: String(api_secret).trim(),
+      kite_password: encrypt(String(kite_password)),
+      totp_secret: encrypt(String(totp_secret).replace(/\s+/g, '').toUpperCase()),
+      auto_login_enabled: true,
+      auto_login_error: null,
+      is_active: true,
+      access_token: null,
+      public_token: null,
+      login_time: null,
+      token_expiry: null
+    };
+
+    let credential;
+
+    if (activeCredential) {
+      credential = await KiteCredential.findByIdAndUpdate(
+        activeCredential._id,
+        update,
+        { new: true }
+      );
+    } else {
+      credential = await KiteCredential.create(update);
+    }
+
+    // Keep a single active credential so downstream findOne({ is_active: true })
+    // reads the rotated record instead of an older stale one.
+    await KiteCredential.updateMany(
+      { _id: { $ne: credential._id }, is_active: true },
+      { is_active: false }
+    );
+
+    // Keep the current process aligned with the rotated Zerodha app.
+    process.env.KITE_API_KEY = credential.api_key;
+    process.env.KITE_API_SECRET = credential.api_secret;
+    process.env.KITE_ACCESS_TOKEN = '';
+
+    res.json({
+      success: true,
+      message: 'Kite credentials updated successfully',
+      note: 'Access and public tokens were cleared. Trigger auto-login or manual login to regenerate them.',
+      credential: {
+        id: credential._id,
+        user_id: credential.user_id,
+        api_key_preview: `${credential.api_key.substring(0, 6)}...`,
+        auto_login_enabled: credential.auto_login_enabled,
+        tokens_cleared: true
+      }
+    });
+
+  } catch (error) {
+    console.error('[KiteAuth] Credential update error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Setup auto-login credentials
 // POST /api/kite/auto-login/setup
 // Body: { password: "...", totp_secret: "..." }

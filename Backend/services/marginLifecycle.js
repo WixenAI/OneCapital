@@ -28,6 +28,12 @@ const toNumber = (v) => {
 
 const round2 = (v) => Number(toNumber(v).toFixed(2));
 
+const formatCurrency = (value) =>
+  round2(value).toLocaleString('en-IN', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+
 const emitMarginAudit = ({
   eventType,
   message,
@@ -143,11 +149,6 @@ export function releaseMarginOnClose(fund, order, opts = {}) {
   if (amount <= 0) return;
 
   const bucket = getMarginBucket(order.product);
-  const beforeMargin = {
-    intradayUsed: toNumber(fund.intraday?.used_limit),
-    overnightAvailable: toNumber(fund.overnight?.available_limit),
-    deliveryUsed: toNumber(fund.delivery?.used_limit),
-  };
 
   if (bucket === 'intraday') {
     fund.intraday.used_limit = Math.max(0, toNumber(fund.intraday.used_limit) - amount);
@@ -168,26 +169,6 @@ export function releaseMarginOnClose(fund, order, opts = {}) {
 
   fund.last_calculated_at = new Date();
   console.log(`[marginLifecycle] Immediate release on close: ${bucket} ₹${amount.toFixed(2)} | Order: ${order._id || ''} | Reason: ${reason}`);
-
-  emitMarginAudit({
-    eventType: 'MARGIN_RELEASE_ORDER_CLOSE',
-    message: `Margin released on order close for customer ${fund.customer_id_str}`,
-    fund,
-    amountDelta: round2(amount),
-    marginBefore: beforeMargin,
-    marginAfter: {
-      intradayUsed: toNumber(fund.intraday?.used_limit),
-      overnightAvailable: toNumber(fund.overnight?.available_limit),
-      deliveryUsed: toNumber(fund.delivery?.used_limit),
-    },
-    note: reason,
-    metadata: {
-      bucket,
-      orderId: String(order._id || ''),
-      symbol: order.symbol || '',
-      product: order.product || '',
-    },
-  });
 }
 
 /**
@@ -204,11 +185,6 @@ export function releaseMarginOnClose(fund, order, opts = {}) {
  */
 export function refundMarginImmediate(fund, bucket, amount, opts = {}) {
   if (amount <= 0) return;
-  const beforeMargin = {
-    intradayUsed: toNumber(fund.intraday?.used_limit),
-    overnightAvailable: toNumber(fund.overnight?.available_limit),
-    deliveryUsed: toNumber(fund.delivery?.used_limit),
-  };
 
   if (bucket === 'intraday') {
     fund.intraday.used_limit = Math.max(0, toNumber(fund.intraday.used_limit) - amount);
@@ -230,24 +206,6 @@ export function refundMarginImmediate(fund, bucket, amount, opts = {}) {
 
   fund.last_calculated_at = new Date();
   console.log(`[marginLifecycle] Immediate refund: ${bucket} ₹${amount.toFixed(2)} | Reason: ${opts.reason || 'rejection'}`);
-
-  emitMarginAudit({
-    eventType: 'MARGIN_REFUND_IMMEDIATE',
-    message: `Immediate margin refund for customer ${fund.customer_id_str}`,
-    fund,
-    amountDelta: round2(amount),
-    marginBefore: beforeMargin,
-    marginAfter: {
-      intradayUsed: toNumber(fund.intraday?.used_limit),
-      overnightAvailable: toNumber(fund.overnight?.available_limit),
-      deliveryUsed: toNumber(fund.delivery?.used_limit),
-    },
-    note: opts.reason || 'Immediate margin refund',
-    metadata: {
-      bucket,
-      orderId: opts.orderId || '',
-    },
-  });
 }
 
 /**
@@ -294,7 +252,7 @@ export function reserveDeliveryForHoldConversion(fund, amount, opts = {}) {
 
   emitMarginAudit({
     eventType: 'MARGIN_LOCK_DELIVERY',
-    message: `Delivery margin locked for customer ${fund.customer_id_str}`,
+    message: `Delivery margin of ${formatCurrency(amount)} was locked for customer ${fund.customer_id_str} for HOLD conversion.`,
     fund,
     amountDelta: round2(-amount),
     marginBefore: beforeMargin,
@@ -302,7 +260,7 @@ export function reserveDeliveryForHoldConversion(fund, amount, opts = {}) {
       overnightAvailable: toNumber(fund.overnight?.available_limit),
       deliveryUsed: toNumber(fund.delivery?.used_limit),
     },
-    note: 'Delivery margin reserved',
+    note: `Overnight available changed from ${formatCurrency(beforeMargin.overnightAvailable)} to ${formatCurrency(fund.overnight?.available_limit)}. Delivery used changed from ${formatCurrency(beforeMargin.deliveryUsed)} to ${formatCurrency(fund.delivery?.used_limit)}.`,
     metadata: {
       orderId: opts.orderId || '',
     },
@@ -339,14 +297,14 @@ export function midnightResetIntraday(fund) {
   if (previousUsed > 0) {
     emitMarginAudit({
       eventType: 'MARGIN_RESET_MIDNIGHT_INTRADAY',
-      message: `Midnight intraday margin reset for customer ${fund.customer_id_str}`,
+      message: `Midnight reset cleared intraday margin of ${formatCurrency(previousUsed)} for customer ${fund.customer_id_str}.`,
       fund,
       amountDelta: round2(previousUsed),
       marginBefore: beforeMargin,
       marginAfter: {
         intradayUsed: toNumber(fund.intraday?.used_limit),
       },
-      note: 'Midnight intraday reset',
+      note: `Intraday used changed from ${formatCurrency(previousUsed)} to ${formatCurrency(fund.intraday?.used_limit)}.`,
     });
   }
 }
@@ -361,10 +319,6 @@ export function midnightResetIntraday(fund) {
  */
 export function midnightReleaseDelivery(fund, activeDeliveryOrderCount) {
   const deliveryUsed = toNumber(fund.delivery?.used_limit);
-  const beforeMargin = {
-    overnightAvailable: toNumber(fund.overnight?.available_limit),
-    deliveryUsed,
-  };
 
   if (activeDeliveryOrderCount > 0) {
     console.log(`[marginLifecycle] Delivery margin ₹${deliveryUsed.toFixed(2)} carried forward (${activeDeliveryOrderCount} active orders)`);
@@ -387,22 +341,6 @@ export function midnightReleaseDelivery(fund, activeDeliveryOrderCount) {
 
   fund.last_calculated_at = new Date();
   console.log(`[marginLifecycle] Delivery margin ₹${deliveryUsed.toFixed(2)} released at midnight`);
-
-  emitMarginAudit({
-    eventType: 'MARGIN_RELEASE_MIDNIGHT_DELIVERY',
-    message: `Midnight delivery margin released for customer ${fund.customer_id_str}`,
-    fund,
-    amountDelta: round2(deliveryUsed),
-    marginBefore: beforeMargin,
-    marginAfter: {
-      overnightAvailable: toNumber(fund.overnight?.available_limit),
-      deliveryUsed: toNumber(fund.delivery?.used_limit),
-    },
-    note: 'Midnight delivery release',
-    metadata: {
-      activeDeliveryOrderCount,
-    },
-  });
 
   return true;
 }

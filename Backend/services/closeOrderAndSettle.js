@@ -19,12 +19,12 @@ import { releaseMarginOnClose } from './marginLifecycle.js';
 import {
   getClientPricingConfig,
   inferPricingBucket,
+  inferSpreadBucket,
   getSpreadForBucket,
   applySpreadToPrice,
   calculateBrokerageForLeg,
   getClosingSide,
 } from '../Utils/ClientPricingEngine.js';
-import { writeAuditFailure, writeAuditSuccess } from '../Utils/AuditLogger.js';
 
 const toNumber = (v) => {
   const n = Number(v);
@@ -32,6 +32,30 @@ const toNumber = (v) => {
 };
 
 const round2 = (v) => Number(toNumber(v).toFixed(2));
+
+const getStoredEntryBrokerageInfo = (order) => {
+  const entry = order?.brokerage_breakdown?.entry;
+  const amount = Number(entry?.amount);
+  if (Number.isFinite(amount) && amount >= 0) {
+    return {
+      ...entry,
+      amount: round2(amount),
+    };
+  }
+
+  const legacyAmount = Number(order?.brokerage);
+  if (!Number.isFinite(legacyAmount) || legacyAmount < 0 || order?.brokerage_breakdown?.exit) {
+    return null;
+  }
+
+  return {
+    amount: round2(legacyAmount),
+    mode: 'LEGACY_TOTAL',
+    rate: null,
+    basis: null,
+    side: String(order?.side || 'BUY').toUpperCase(),
+  };
+};
 
 /**
  * Detect if an order is for options based on symbol
@@ -46,7 +70,7 @@ const isOptionOrder = (symbol) => {
  *
  * @param {string|ObjectId} orderId - The order _id
  * @param {Object} opts
- * @param {number} opts.exitPrice - The exit/close price (LTP at time of close)
+ * @param {number} opts.exitPrice - The raw exit trigger/close price supplied by the caller
  * @param {string} opts.exitReason - One of: manual, stop_loss, target, expiry, square_off
  * @param {string} [opts.cameFrom] - Source: Open, Hold, Overnight, Holdings
  * @returns {{ ok: boolean, order?: Object, pnl?: Object, error?: string }}
@@ -92,6 +116,12 @@ export async function closeOrderAndSettle(orderId, { exitPrice, exitReason = 'ma
       symbol: order.symbol,
       orderType: order.order_type,
     });
+    const spreadBucket = inferSpreadBucket({
+      exchange: order.exchange,
+      segment: order.segment,
+      symbol: order.symbol,
+      orderType: order.order_type,
+    });
 
     const entryEffectivePrice = toNumber(order.effective_entry_price || order.price);
     const entrySpreadApplied = toNumber(order.entry_spread_applied);
@@ -103,7 +133,7 @@ export async function closeOrderAndSettle(orderId, { exitPrice, exitReason = 'ma
     const fallbackRawExit = toNumber(order.raw_entry_price || order.effective_entry_price || order.price);
     const safeRawExitPrice = rawExitInput > 0 ? rawExitInput : fallbackRawExit;
     const closingSide = getClosingSide(order.side);
-    const spreadForBucket = getSpreadForBucket(pricingConfig, pricingBucket);
+    const spreadForBucket = getSpreadForBucket(pricingConfig, spreadBucket);
     const exitPricing = applySpreadToPrice({
       rawPrice: safeRawExitPrice,
       side: closingSide,
@@ -116,7 +146,7 @@ export async function closeOrderAndSettle(orderId, { exitPrice, exitReason = 'ma
       ? (effectiveExitPrice - entryEffectivePrice) * qty
       : (entryEffectivePrice - effectiveExitPrice) * qty;
 
-    const entryBrokerageInfo = calculateBrokerageForLeg({
+    const entryBrokerageInfo = getStoredEntryBrokerageInfo(order) || calculateBrokerageForLeg({
       pricing: pricingConfig,
       bucket: pricingBucket,
       side: order.side,
@@ -173,38 +203,6 @@ export async function closeOrderAndSettle(orderId, { exitPrice, exitReason = 'ma
       order.settlement_status = 'failed';
       await order.save();
       console.error(`[closeOrderAndSettle] Fund not found for ${order.customer_id_str}. Order ${orderId} closed but unsettled.`);
-      await writeAuditFailure({
-        type: 'transaction',
-        eventType: 'FUND_PNL_SETTLEMENT',
-        category: 'funds',
-        message: `Settlement failed: fund not found for customer ${order.customer_id_str}`,
-        actor: { type: 'system', id_str: 'SYSTEM', role: 'system' },
-        source: 'system',
-        target: {
-          type: 'customer',
-          id: order.customer_id,
-          id_str: order.customer_id_str,
-        },
-        entity: {
-          type: 'order',
-          id: order._id,
-          ref: order.order_id || order._id?.toString(),
-        },
-        broker: {
-          broker_id: order.broker_id,
-          broker_id_str: order.broker_id_str,
-        },
-        customer: {
-          customer_id: order.customer_id,
-          customer_id_str: order.customer_id_str,
-        },
-        amountDelta: round2(netPnl),
-        note: 'Fund account not found during settlement',
-        metadata: {
-          settlementStatus: 'failed',
-          exitReason,
-        },
-      });
       return { ok: true, order, pnl: { grossPnl, totalBrokerage, netPnl }, warning: 'fund_not_found' };
     }
 
@@ -229,9 +227,7 @@ export async function closeOrderAndSettle(orderId, { exitPrice, exitReason = 'ma
     order.margin_blocked = 0;
 
     // 6. Book realized P&L to pnl_balance (separate from deposited cash)
-    const beforePnlBalance = toNumber(fund.pnl_balance);
     fund.pnl_balance = toNumber(fund.pnl_balance) + netPnl;
-    const afterPnlBalance = toNumber(fund.pnl_balance);
 
     // 7. Record ledger transaction
     fund.transactions.push({
@@ -249,89 +245,9 @@ export async function closeOrderAndSettle(orderId, { exitPrice, exitReason = 'ma
     try {
       await fund.save();
       order.settlement_status = 'settled';
-
-      await writeAuditSuccess({
-        type: 'transaction',
-        eventType: 'FUND_PNL_SETTLEMENT',
-        category: 'funds',
-        message: `Settlement posted for customer ${order.customer_id_str}`,
-        actor: { type: 'system', id_str: 'SYSTEM', role: 'system' },
-        source: 'system',
-        target: {
-          type: 'customer',
-          id: order.customer_id,
-          id_str: order.customer_id_str,
-        },
-        entity: {
-          type: 'order',
-          id: order._id,
-          ref: order.order_id || order._id?.toString(),
-        },
-        broker: {
-          broker_id: order.broker_id,
-          broker_id_str: order.broker_id_str,
-        },
-        customer: {
-          customer_id: order.customer_id,
-          customer_id_str: order.customer_id_str,
-        },
-        amountDelta: round2(netPnl),
-        fundBefore: {
-          pnlBalance: beforePnlBalance,
-        },
-        fundAfter: {
-          pnlBalance: afterPnlBalance,
-        },
-        note: `Settlement reason: ${exitReason}`,
-        metadata: {
-          orderSymbol: order.symbol,
-          side: order.side,
-          quantity: qty,
-          grossPnl: round2(grossPnl),
-          brokerage: round2(totalBrokerage),
-          netPnl: round2(netPnl),
-          settlementStatus: 'settled',
-        },
-      });
     } catch (fundErr) {
       console.error(`[closeOrderAndSettle] Fund save failed for order ${orderId}:`, fundErr.message);
       order.settlement_status = 'failed';
-
-      await writeAuditFailure({
-        type: 'transaction',
-        eventType: 'FUND_PNL_SETTLEMENT',
-        category: 'funds',
-        message: `Settlement failed while saving fund for customer ${order.customer_id_str}`,
-        actor: { type: 'system', id_str: 'SYSTEM', role: 'system' },
-        source: 'system',
-        target: {
-          type: 'customer',
-          id: order.customer_id,
-          id_str: order.customer_id_str,
-        },
-        entity: {
-          type: 'order',
-          id: order._id,
-          ref: order.order_id || order._id?.toString(),
-        },
-        broker: {
-          broker_id: order.broker_id,
-          broker_id_str: order.broker_id_str,
-        },
-        customer: {
-          customer_id: order.customer_id,
-          customer_id_str: order.customer_id_str,
-        },
-        amountDelta: round2(netPnl),
-        note: 'Fund save failed during settlement',
-        metadata: {
-          error: fundErr.message,
-          settlementStatus: 'failed',
-          grossPnl: round2(grossPnl),
-          brokerage: round2(totalBrokerage),
-          netPnl: round2(netPnl),
-        },
-      });
     }
 
     // 9. Save order with settlement status + P&L

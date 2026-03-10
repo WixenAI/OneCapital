@@ -24,6 +24,12 @@ const toNumber = (value) => {
   return Number.isFinite(n) ? n : 0;
 };
 
+const formatCurrency = (value) =>
+  toNumber(value).toLocaleString('en-IN', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+
 const PENDING_WITHDRAWAL_STATUSES = ['pending', 'processing'];
 const APPROVED_WITHDRAWAL_STATUSES = ['approved', 'completed'];
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
@@ -292,7 +298,6 @@ const getBalance = asyncHandler(async (req, res) => {
   const depositedCash = toNumber(fund.net_available_balance);
   const pnlBalance = toNumber(fund.pnl_balance);
   const availableCash = depositedCash + pnlBalance;
-  const withdrawableNetCash = Math.max(0, pnlBalance - pendingWithdrawals);
   const optionPercent = toNumber(fund.option_limit_percentage) || 10;
 
   // Option premium = single pool of X% of opening balance
@@ -345,6 +350,19 @@ const getBalance = asyncHandler(async (req, res) => {
     })
     .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
 
+  // Subtract approved withdrawals recorded in fund.transactions since the boundary.
+  // When a withdrawal is approved, pendingWithdrawals drops to 0 (request is no longer pending)
+  // but a 'withdrawal' transaction is pushed to fund.transactions — we must account for it.
+  const withdrawalTxThisWeek = (fund.transactions || [])
+    .filter((t) => {
+      const ts = t.timestamp ? new Date(t.timestamp) : null;
+      return ts && ts >= boundaryStartUtc && t.type === 'withdrawal';
+    })
+    .reduce((sum, t) => sum + Math.abs(Number(t.amount) || 0), 0);
+
+  const netCashAfterWithdrawals = Number((realizedPnlThisWeek - withdrawalTxThisWeek).toFixed(2));
+  const withdrawableNetCash = Math.max(0, netCashAfterWithdrawals - pendingWithdrawals);
+
   res.status(200).json({
     success: true,
     // Legacy fields (backward compatible)
@@ -366,9 +384,10 @@ const getBalance = asyncHandler(async (req, res) => {
     wallet: {
       availableCash,
       depositedCash,
-      netCash: pnlBalance,
+      netCash: netCashAfterWithdrawals,
       pendingWithdrawals,
       withdrawableNetCash,
+      withdrawnThisWeek: Number(withdrawalTxThisWeek.toFixed(2)),
     },
     trading: {
       openingBalance,
@@ -517,7 +536,7 @@ const submitAddFundsProof = asyncHandler(async (req, res) => {
     type: 'transaction',
     eventType: 'PAYMENT_PROOF_SUBMIT',
     category: 'funds',
-    message: `Customer submitted payment proof for request ${request._id?.toString()}`,
+    message: `Payment proof was submitted for add-funds request ${request.payment_reference || request._id?.toString()} by customer ${req.user.customer_id}.`,
     target: {
       type: 'customer',
       id: req.user._id,
@@ -537,7 +556,7 @@ const submitAddFundsProof = asyncHandler(async (req, res) => {
       customer_id_str: req.user.customer_id,
     },
     amountDelta: toNumber(request.amount),
-    note: 'Customer uploaded payment proof',
+    note: `Amount under review: ${formatCurrency(request.amount)}. Waiting for broker review.`,
     metadata: {
       status: request.status,
       paymentReference: request.payment_reference || '',
@@ -587,9 +606,24 @@ const requestWithdraw = asyncHandler(async (req, res) => {
   const fund = await FundModel.findOne({
     customer_id_str: customerIdStr,
     broker_id_str: brokerIdStr,
-  });
+  }).select('transactions pnl_balance');
 
-  const netCash = toNumber(fund?.pnl_balance);
+  const weeklyBoundary = resolveCurrentWeeklyBoundary({
+    transactions: fund?.transactions || [],
+    nowUtc: new Date(),
+  });
+  const realizedPnlThisWeek = (fund?.transactions || [])
+    .filter((t) => {
+      const ts = t.timestamp ? new Date(t.timestamp) : null;
+      return (
+        ts
+        && ts >= weeklyBoundary.boundaryStartUtc
+        && (t.type === 'realized_profit' || t.type === 'realized_loss')
+      );
+    })
+    .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+
+  const netCash = Number(realizedPnlThisWeek.toFixed(2));
   const pendingWithdrawals = await getPendingWithdrawalsTotal({
     customerMongoId: req.user._id,
     brokerIdStr,

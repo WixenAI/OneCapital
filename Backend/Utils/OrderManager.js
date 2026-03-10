@@ -357,10 +357,20 @@ const evaluateTriggerHit = ({ side, sl, target }, ltp) => {
   return null;
 };
 
+const getConfiguredExitPrice = (trigger, reason) => {
+  if (reason === 'STOPLOSS_HIT') return toNumber(trigger?.sl, 0);
+  if (reason === 'TARGET_HIT') return toNumber(trigger?.target, 0);
+  return 0;
+};
+
 const executeExit = async (trigger, currentLtp, reason) => {
   const { orderId, token } = trigger;
+  const configuredExitPrice = getConfiguredExitPrice(trigger, reason);
+  const exitPrice = configuredExitPrice > 0 ? configuredExitPrice : currentLtp;
 
-  console.log(`⚡ [OrderManager] Trigger hit. Order=${orderId}, token=${token}, reason=${reason}, ltp=${currentLtp}`);
+  console.log(
+    `⚡ [OrderManager] Trigger hit. Order=${orderId}, token=${token}, reason=${reason}, ltp=${currentLtp}, exitPrice=${exitPrice}`
+  );
 
   removeByOrderIdLocal(orderId, token);
 
@@ -371,7 +381,7 @@ const executeExit = async (trigger, currentLtp, reason) => {
     };
 
     const result = await closeOrderAndSettle(orderId, {
-      exitPrice: currentLtp,
+      exitPrice,
       exitReason: exitReasonMap[reason] || 'manual',
       cameFrom: 'Open',
     });

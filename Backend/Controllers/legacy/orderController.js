@@ -21,8 +21,11 @@ import {
 import {
   getClientPricingConfig,
   inferPricingBucket,
+  inferSpreadBucket,
   getSpreadForBucket,
   applySpreadToPrice,
+  buildEntryBrokerageSnapshot,
+  resolveLots,
 } from "../../Utils/ClientPricingEngine.js";
 import { resolveOrderValidity } from "../../services/orderValidity.js";
 import { logFailedOrderAttempt } from "../../Utils/OrderAttemptLogger.js";
@@ -155,6 +158,11 @@ const postOrder = asyncHandler(async (req, res) => {
   const requestedTriggerPrice = normalizeRiskValue(body.trigger_price);
   const requestedTarget = normalizeRiskValue(body.target);
   const requestedStopLoss = normalizeRiskValue(body.stop_loss);
+  // The current UI sends MIS SL placement in trigger_price; arm the watcher via stop_loss.
+  const effectiveStopLoss =
+    requestedStopLoss > 0
+      ? requestedStopLoss
+      : (productNorm === "MIS" && orderTypeNorm === "SL" ? requestedTriggerPrice : 0);
 
   if (!Number.isFinite(qtyNum) || qtyNum <= 0) {
     return failAttempt({
@@ -163,14 +171,6 @@ const postOrder = asyncHandler(async (req, res) => {
       code: "VALIDATION_ERROR",
     });
   }
-  if (!jobbin_price) {
-    return failAttempt({
-      status: 400,
-      error: "enter jobbing price",
-      code: "VALIDATION_ERROR",
-    });
-  }
-
   const rawEntryPrice = Number(price);
   if (!Number.isFinite(rawEntryPrice) || rawEntryPrice <= 0) {
     return failAttempt({
@@ -203,13 +203,13 @@ const postOrder = asyncHandler(async (req, res) => {
 
   if (!resolvedExchange || !resolvedSegment || resolvedSegment === "UNKNOWN") {
     instrumentDoc = await Instrument.findOne({ instrument_token: String(instrument_token) })
-      .select("exchange segment tradingsymbol name expiry instrument_type")
+      .select("exchange segment tradingsymbol name expiry instrument_type lot_size")
       .lean();
     resolvedExchange = resolvedExchange || instrumentDoc?.exchange || "NSE";
     resolvedSegment = resolvedSegment === "UNKNOWN" ? (instrumentDoc?.segment || "NSE") : resolvedSegment;
   } else {
     instrumentDoc = await Instrument.findOne({ instrument_token: String(instrument_token) })
-      .select("exchange segment tradingsymbol name expiry instrument_type")
+      .select("exchange segment tradingsymbol name expiry instrument_type lot_size")
       .lean();
   }
 
@@ -224,13 +224,34 @@ const postOrder = asyncHandler(async (req, res) => {
     symbol,
     orderType: orderTypeNorm,
   });
-  const spreadForBucket = getSpreadForBucket(pricingConfig, pricingBucket);
+  const spreadBucket = inferSpreadBucket({
+    exchange: resolvedExchange,
+    segment: resolvedSegment,
+    symbol,
+    orderType: orderTypeNorm,
+  });
+  const spreadForBucket = getSpreadForBucket(pricingConfig, spreadBucket);
   const entryPricing = applySpreadToPrice({
     rawPrice: rawEntryPrice,
     side: sideNorm,
     spread: spreadForBucket,
   });
   const effectiveEntryPrice = entryPricing.effectivePrice;
+  const resolvedLotSize = Math.max(1, toNumber(lot_size || instrumentDoc?.lot_size || 1));
+  const resolvedLots = resolveLots({
+    lots,
+    quantity: qtyNum,
+    lotSize: resolvedLotSize,
+  });
+  const entryBrokerageSnapshot = buildEntryBrokerageSnapshot({
+    pricing: pricingConfig,
+    bucket: pricingBucket,
+    side: sideNorm,
+    quantity: qtyNum,
+    lotSize: resolvedLotSize,
+    lots: resolvedLots,
+    effectivePrice: effectiveEntryPrice,
+  });
 
   // ============================================================
   // START: FUND & MARGIN LOGIC (Same as updateOrder)
@@ -382,16 +403,18 @@ const postOrder = asyncHandler(async (req, res) => {
     trigger_price: Number(body.trigger_price || 0),
     target: Number(body.target || 0),
     quantity: qtyNum,
-    lot_size: Number(lot_size) || 1,
-    lots,
+    lot_size: resolvedLotSize,
+    lots: resolvedLots,
     increase_price:
       jobbin_price === "" || jobbin_price == null ? 0 : Number(jobbin_price),
     margin_blocked: requiredMargin,
     pricing_bucket: pricingBucket,
+    brokerage: entryBrokerageSnapshot.amount,
+    brokerage_breakdown: entryBrokerageSnapshot.breakdown,
     came_From: came_From || "Open",
     meta: mergedMeta,
     placed_at: placedAt,
-    stop_loss: requestedStopLoss,
+    stop_loss: effectiveStopLoss,
     validity_mode: validity.mode,
     validity_started_at: validity.startsAt,
     validity_expires_at: validity.expiresAt,
@@ -479,6 +502,7 @@ const updateOrder = asyncHandler(async (req, res) => {
     product,
     quantity,
     lots,
+    lot_size,
     price,
     order_status,
     segment,
@@ -504,8 +528,11 @@ const updateOrder = asyncHandler(async (req, res) => {
   // Update Object Creation
   const update = {};
 
-  if (quantity) update.quantity = Number(quantity);
-  if (lots) update.lots = Number(lots);
+  if (quantity !== undefined && quantity !== null) update.quantity = Number(quantity);
+  if (lots !== undefined && lots !== null && lots !== '') update.lots = Number(lots);
+  if (lot_size !== undefined && lot_size !== null && lot_size !== '') {
+    update.lot_size = Math.max(1, Number(lot_size) || 1);
+  }
   if (hasPriceInput && String(order_status || '').toUpperCase() !== 'CLOSED') {
     // NOTE: weighted average is computed later (after fetching existing order)
     // when qty increases. Store raw requested price temporarily.
@@ -558,8 +585,7 @@ const updateOrder = asyncHandler(async (req, res) => {
 
   try {
     // 1. Find Existing Order
-    let existing = await Order.findOne({ order_id: order_id });
-    if (!existing) existing = await Order.findById(order_id);
+    let existing = await Order.findById(order_id);
 
     if (!existing) {
       return res.status(404).json({ success: false, message: 'Order not found' });
@@ -572,18 +598,59 @@ const updateOrder = asyncHandler(async (req, res) => {
         const oldQty = toNumber(existing.quantity);
         const oldPrice = toNumber(existing.effective_entry_price || existing.price);
         const addedQty = toNumber(update.quantity) - oldQty;
-        const newPrice = toNumber(update._requestedPrice);
-        // Weighted average: (oldQty × oldPrice + addedQty × newPrice) / totalQty
-        const weightedAvg = ((oldQty * oldPrice) + (addedQty * newPrice)) / toNumber(update.quantity);
+        // Frontend sends raw LTP for new lots — apply spread here (same as order placement)
+        const rawNewLotPrice = toNumber(update._requestedPrice);
+        const pricingConfig = await getClientPricingConfig({
+          brokerIdStr: existing.broker_id_str,
+          customerIdStr: existing.customer_id_str,
+        });
+        const pricingBucket = existing.pricing_bucket || inferPricingBucket({
+          exchange: existing.exchange,
+          segment: existing.segment,
+          symbol: existing.symbol,
+          orderType: existing.order_type,
+        });
+        const spreadBucket = inferSpreadBucket({
+          exchange: existing.exchange,
+          segment: existing.segment,
+          symbol: existing.symbol,
+          orderType: existing.order_type,
+        });
+        const spreadForBucket = getSpreadForBucket(pricingConfig, spreadBucket);
+        const newLotPricing = applySpreadToPrice({
+          rawPrice: rawNewLotPrice,
+          side: existing.side,
+          spread: spreadForBucket,
+        });
+        const effectiveNewLotPrice = newLotPricing.effectivePrice;
+        // Single weighted average: (oldQty × oldEffectivePrice + addedQty × newEffectivePrice) / totalQty
+        const weightedAvg = ((oldQty * oldPrice) + (addedQty * effectiveNewLotPrice)) / toNumber(update.quantity);
         const finalPrice = Math.round(weightedAvg * 100) / 100;
         update.price = finalPrice;
-        update.raw_entry_price = finalPrice;
+        update.raw_entry_price = rawNewLotPrice;
         update.effective_entry_price = finalPrice;
+        update.entry_spread_applied = newLotPricing.appliedSpread;
       } else {
         // No qty increase — direct price update (broker edit or same-qty modify)
-        update.price = update._requestedPrice;
-        update.raw_entry_price = update._requestedPrice;
-        update.effective_entry_price = update._requestedPrice;
+        const pricingConfig = await getClientPricingConfig({
+          brokerIdStr: existing.broker_id_str,
+          customerIdStr: existing.customer_id_str,
+        });
+        const spreadBucket = inferSpreadBucket({
+          exchange: existing.exchange,
+          segment: existing.segment,
+          symbol: existing.symbol,
+          orderType: existing.order_type,
+        });
+        const updatedEntryPricing = applySpreadToPrice({
+          rawPrice: update._requestedPrice,
+          side: existing.side,
+          spread: getSpreadForBucket(pricingConfig, spreadBucket),
+        });
+        update.price = updatedEntryPricing.effectivePrice;
+        update.raw_entry_price = updatedEntryPricing.rawPrice;
+        update.effective_entry_price = updatedEntryPricing.effectivePrice;
+        update.entry_spread_applied = updatedEntryPricing.appliedSpread;
       }
       delete update._requestedPrice;
     }
@@ -794,6 +861,42 @@ const updateOrder = asyncHandler(async (req, res) => {
         update.margin_released_at = new Date();
       }
     }
+
+    const finalPricingConfig = await getClientPricingConfig({
+      brokerIdStr: existing.broker_id_str,
+      customerIdStr: existing.customer_id_str,
+    });
+    const finalPricingBucket = update.pricing_bucket || existing.pricing_bucket || inferPricingBucket({
+      exchange: update.exchange || existing.exchange,
+      segment: update.segment || existing.segment,
+      symbol: update.symbol || existing.symbol,
+      orderType: update.order_type || existing.order_type,
+    });
+    const finalEntryPrice = toNumber(
+      update.effective_entry_price ?? update.price ?? existing.effective_entry_price ?? existing.price
+    );
+    const finalQuantity = toNumber(update.quantity ?? existing.quantity);
+    const finalLotSize = Math.max(1, toNumber(update.lot_size ?? existing.lot_size ?? 1));
+    const finalLots = resolveLots({
+      lots: update.lots ?? existing.lots,
+      quantity: finalQuantity,
+      lotSize: finalLotSize,
+    });
+    const entryBrokerageSnapshot = buildEntryBrokerageSnapshot({
+      pricing: finalPricingConfig,
+      bucket: finalPricingBucket,
+      side: update.side || existing.side,
+      quantity: finalQuantity,
+      lotSize: finalLotSize,
+      lots: finalLots,
+      effectivePrice: finalEntryPrice,
+    });
+
+    update.pricing_bucket = finalPricingBucket;
+    update.lot_size = finalLotSize;
+    update.lots = finalLots;
+    update.brokerage = entryBrokerageSnapshot.amount;
+    update.brokerage_breakdown = entryBrokerageSnapshot.breakdown;
 
     await fund.save();
 

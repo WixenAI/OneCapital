@@ -14,6 +14,7 @@ const formatCount = (value) => {
 };
 
 const readNumber = (value) => {
+  if (value === null || value === undefined || value === '') return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
 };
@@ -56,8 +57,10 @@ const OrderDetailSheet = ({ isOpen, order, tab, onClose, livePrices = {} }) => {
   const exitBrokerageRaw = readNumber(order.brokerage_breakdown?.exit?.amount);
   const totalBrokerage = readNumber(order.brokerage ?? order.brokerage_breakdown?.total);
 
-  const entryBrokerageForCalc = entryBrokerageRaw != null && entryBrokerageRaw > 0 ? entryBrokerageRaw : null;
-  const exitBrokerageForCalc = exitBrokerageRaw != null && exitBrokerageRaw > 0 ? exitBrokerageRaw : null;
+  const entryBrokerageForCalc = entryBrokerageRaw != null ? entryBrokerageRaw : null;
+  const openEntryBrokerageForCalc =
+    entryBrokerageForCalc != null ? entryBrokerageForCalc : (totalBrokerage != null ? totalBrokerage : null);
+  const exitBrokerageForCalc = exitBrokerageRaw != null ? exitBrokerageRaw : null;
 
   let pnlData;
   if (isClosed) {
@@ -82,13 +85,13 @@ const OrderDetailSheet = ({ isOpen, order, tab, onClose, livePrices = {} }) => {
       avgPrice,
       ltp,
       qty,
-      entryBrokerage: entryBrokerageForCalc,
+      entryBrokerage: openEntryBrokerageForCalc,
     });
   }
 
   const isProfit = pnlData.netPnl >= 0;
   const pnlColor = isProfit ? 'text-[#078838]' : 'text-red-500';
-  const entryBrokerageEstimated = !isClosed && !(entryBrokerageRaw != null && entryBrokerageRaw > 0);
+  const entryBrokerageEstimated = !isClosed && openEntryBrokerageForCalc == null;
 
   const placedAt = order.placed_at || order.placedAt || order.createdAt;
   const closedAt = order.closed_at || order.closedAt;

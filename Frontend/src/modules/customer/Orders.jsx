@@ -463,14 +463,7 @@ const Orders = () => {
       };
     }
 
-    const jobbing = Number(order.jobbin_price || 0.08);
-    let closedLtp = liveLtp;
-    if (liveLtp > 0 && jobbing > 0) {
-      closedLtp = order.side === 'BUY'
-        ? liveLtp - (liveLtp * (jobbing / 100))
-        : liveLtp + (liveLtp * (jobbing / 100));
-    }
-    closedLtp = Number(closedLtp.toFixed(4));
+    const closedLtp = Number(liveLtp.toFixed(4));
 
     try {
       await customerApi.updateOrder({

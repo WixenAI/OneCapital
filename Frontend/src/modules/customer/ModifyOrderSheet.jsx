@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import customerApi from '../../api/customer';
 
 const MARKET_CLOSED_TEXT = 'Market Closed. Open From 9:15AM To 3:15PM On Working Days';
@@ -28,6 +29,8 @@ const ModifyOrderSheet = ({
   const [submitting, setSubmitting] = useState(false);
   const [feedback, setFeedback] = useState(null);
   const [funds, setFunds] = useState(null);
+
+  const navigate = useNavigate();
 
   const isBuy = order?.side === 'BUY';
   const currentQty = toPositiveNumber(order?.quantity);
@@ -172,10 +175,8 @@ const ModifyOrderSheet = ({
       if (priceChanged) {
         payload.price = parsedEditPrice;
       } else if (lotsChanged) {
-        // Weighted average price: (oldQty × oldPrice + addedQty × LTP) / newTotalQty
-        const weightedAvg = (currentQty * currentPrice + addQty * ltp) / newTotalQty;
-        payload.price = Math.round(weightedAvg * 100) / 100;
-        // Send original values so backend can verify independently
+        // Send raw LTP for new lots — backend applies spread and computes weighted average
+        payload.price = ltp;
         payload.old_price = currentPrice;
         payload.old_quantity = currentQty;
       }
@@ -186,15 +187,38 @@ const ModifyOrderSheet = ({
       }
 
       const updateFn = apiUpdateOrder || customerApi.updateOrder;
-      await updateFn(payload);
+      const response = await updateFn(payload);
 
-      if (isLongTerm && lotsChanged) {
-        setFeedback({ type: 'success', message: 'Order modified & sent for broker approval.' });
+      if (typeof onModified === 'function') onModified();
+
+      if (lotsChanged) {
+        const updatedOrder = response?.order || {};
+        const newAvgPrice = updatedOrder.effective_entry_price ?? updatedOrder.price ?? 0;
+        navigate('/order-confirmation', {
+          state: {
+            referenceId: order.id,
+            orderId: order.id,
+            symbol: order.symbol,
+            name: order.name || order.symbol,
+            exchange: order.exchange,
+            segment: order.segment,
+            price: newAvgPrice,
+            side: order.side,
+            quantity: newTotalQty,
+            orderType: order.order_type || order.orderType || 'MARKET',
+            productType: order.product,
+            requiresApproval: isLongTerm && lotsChanged,
+            placedAt: new Date().toISOString(),
+            status: isLongTerm ? 'PENDING' : (order.status || order.order_status),
+            isModified: true,
+            ltp,
+            newAvgPrice,
+          },
+        });
       } else {
         setFeedback({ type: 'success', message: 'Order modified!' });
+        setTimeout(() => onClose?.(), 800);
       }
-      if (typeof onModified === 'function') onModified();
-      setTimeout(() => onClose?.(), 800);
     } catch (err) {
       setFeedback({
         type: 'error',
@@ -362,7 +386,7 @@ const ModifyOrderSheet = ({
           {parsedAddLots > 0 && (
             <div className="flex justify-between items-center text-xs px-1">
               <span className="text-[#617589] dark:text-[#9cb7aa]">
-                Margin: <span className="font-semibold text-[#111418] dark:text-[#e8f3ee]">₹{requiredMargin.toFixed(2)}</span>
+                Est. Margin: <span className="font-semibold text-[#111418] dark:text-[#e8f3ee]">₹{requiredMargin.toFixed(2)}</span>
               </span>
               <span className={`font-semibold ${availableBalance >= requiredMargin ? 'text-[#078838]' : 'text-red-500'}`}>
                 {isOption ? 'Option Premium' : 'Available'}: ₹{availableBalance.toFixed(2)}

@@ -46,6 +46,47 @@ const escapeRegex = (value) => {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 };
 
+const toTitleCase = (value) =>
+  String(value || '')
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(' ');
+
+const humanizeToken = (value) => toTitleCase(String(value || '').replace(/[_-]+/g, ' ').trim());
+
+const ACTION_LABELS = {
+  FUND_MANUAL_ADD: 'Manual Funds Added',
+  FUND_MANUAL_EDIT: 'Manual Funds Updated',
+  MARGIN_LIMIT_UPDATE: 'Margin Limits Updated',
+  OPTION_LIMIT_PERCENT_UPDATE: 'Option Limit Updated',
+  MARGIN_LOCK_DELIVERY: 'Delivery Margin Locked',
+  MARGIN_RESET_MIDNIGHT_INTRADAY: 'Midnight Intraday Reset',
+  PAYMENT_REQUEST_CREATE: 'Add Funds Request Created',
+  PAYMENT_PROOF_SUBMIT: 'Payment Proof Submitted',
+  PAYMENT_VERIFY: 'Add Funds Verified',
+  PAYMENT_REJECT: 'Add Funds Rejected',
+  PAYMENT_DELETE: 'Add Funds Deleted',
+  WEEKLY_SETTLEMENT_RUN: 'Weekly Settlement Completed',
+  WEEKLY_SETTLEMENT_PARTIAL_FAILURE: 'Weekly Settlement Partial Failure',
+  AUTO_WEEKLY_SETTLEMENT_CRON: 'Auto Weekly Settlement Cron',
+  WITHDRAWAL_REQUEST_CREATE: 'Withdrawal Requested',
+  WITHDRAWAL_APPROVE: 'Withdrawal Approved',
+  WITHDRAWAL_REJECT: 'Withdrawal Rejected',
+};
+
+const getActionLabel = (eventType) => ACTION_LABELS[eventType] || humanizeToken(eventType || 'audit_event');
+
+const getPerformedBy = (entry) => humanizeToken(entry?.actor_type || entry?.source || 'system');
+
+const getReference = (entry) =>
+  entry?.metadata?.runRef
+  || entry?.metadata?.requestRef
+  || entry?.metadata?.transactionRef
+  || entry?.metadata?.orderId
+  || entry?.entity_ref
+  || '';
+
 const buildBaseQuery = ({
   type,
   search,
@@ -141,16 +182,19 @@ const mapLogResponse = (entry) => ({
   timestamp: entry?.createdAt || entry?.timestamp || new Date(),
   severity: entry?.severity || 'info',
   eventType: entry?.event_type || '',
+  actionLabel: getActionLabel(entry?.event_type || ''),
   category: entry?.category || '',
   status: entry?.status || '',
   source: entry?.source || '',
-  actorType: entry?.actor_type || '',
-  actorId: entry?.actor_id_str || '',
+  performedBy: getPerformedBy(entry),
+  reference: getReference(entry),
   brokerId: entry?.broker_id_str || '',
   customerId: entry?.customer_id_str || '',
   amountDelta: Number(entry?.amount_delta || 0),
   note: entry?.note || '',
   requestId: entry?.request_id || '',
+  fundBefore: entry?.fund_before || {},
+  fundAfter: entry?.fund_after || {},
 });
 
 const fetchLogs = async ({ query, page, limit, sortOrder = 'desc' }) => {
@@ -366,9 +410,16 @@ const getSystemLogs = asyncHandler(async (req, res) => {
  * @desc     Clear logs from database
  * @route    DELETE /api/admin/logs
  * @access   Private (Admin only)
+ *
+ * Body params:
+ *   scope  - 'all' | 'events' | 'alerts'  (default: 'all')
+ *   period - 'all' | 'last_week'           (default: 'all')
+ *            'last_week' deletes only records older than 7 days
  */
 const clearLogs = asyncHandler(async (req, res) => {
   const scope = String(req.body?.scope || req.query?.scope || 'all').trim().toLowerCase();
+  const period = String(req.body?.period || req.query?.period || 'all').trim().toLowerCase();
+
   if (!['all', 'events', 'alerts'].includes(scope)) {
     return res.status(400).json({
       success: false,
@@ -376,28 +427,42 @@ const clearLogs = asyncHandler(async (req, res) => {
     });
   }
 
+  if (!['all', 'last_week'].includes(period)) {
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid period. Allowed: all, last_week.',
+    });
+  }
+
+  // Build date filter: 'last_week' removes records older than 7 days
+  const dateFilter = period === 'last_week'
+    ? { createdAt: { $lt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } }
+    : {};
+
   let deletedEvents = 0;
   let deletedAlerts = 0;
 
   if (scope === 'all' || scope === 'events') {
-    const eventDeleteResult = await AuditEventModel.deleteMany({});
+    const eventDeleteResult = await AuditEventModel.deleteMany(dateFilter);
     deletedEvents = Number(eventDeleteResult?.deletedCount || 0);
   }
 
   if (scope === 'all' || scope === 'alerts') {
-    const alertDeleteResult = await AuditAlertModel.deleteMany({});
+    const alertDeleteResult = await AuditAlertModel.deleteMany(dateFilter);
     deletedAlerts = Number(alertDeleteResult?.deletedCount || 0);
   }
 
+  const periodLabel = period === 'last_week' ? 'older than 7 days' : 'all records';
   res.status(200).json({
     success: true,
-    message: 'Logs cleared successfully.',
+    message: `Logs cleared successfully (${periodLabel}).`,
     deleted: {
       events: deletedEvents,
       alerts: deletedAlerts,
       total: deletedEvents + deletedAlerts,
     },
     scope,
+    period,
   });
 });
 

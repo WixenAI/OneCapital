@@ -11,8 +11,11 @@ import Instrument from '../../Model/InstrumentModel.js';
 import {
   getClientPricingConfig,
   inferPricingBucket,
+  inferSpreadBucket,
   getSpreadForBucket,
   applySpreadToPrice,
+  buildEntryBrokerageSnapshot,
+  resolveLots,
 } from '../../Utils/ClientPricingEngine.js';
 import {
   addToWatchlist,
@@ -100,6 +103,9 @@ const placeOrder = asyncHandler(async (req, res) => {
     disclosedQuantity,
     stopLoss,
     target,
+    lots,
+    lotSize,
+    lot_size,
   } = req.body;
 
   const failPlacement = async ({
@@ -148,6 +154,12 @@ const placeOrder = asyncHandler(async (req, res) => {
   const triggerPriceNum = toNumber(triggerPrice, 0);
   const stopLossNum = toNumber(stopLoss, 0);
   const targetNum = toNumber(target, 0);
+  const requestedLotSize = lotSize ?? lot_size;
+  // The current UI sends MIS SL placement in triggerPrice; arm the watcher via stop_loss.
+  const effectiveStopLossNum =
+    stopLossNum > 0
+      ? stopLossNum
+      : (productNorm === 'MIS' && orderTypeNorm === 'SL' ? triggerPriceNum : 0);
 
   if (!['BUY', 'SELL'].includes(sideNorm)) {
     return failPlacement({
@@ -214,10 +226,11 @@ const placeOrder = asyncHandler(async (req, res) => {
 
   let resolvedExchange = exchange;
   let resolvedSegment = segment;
+  let instrumentDoc = null;
 
-  if (!resolvedExchange || !resolvedSegment) {
-    const instrumentDoc = await Instrument.findOne({ instrument_token: String(instrumentToken) })
-      .select('exchange segment')
+  if (!resolvedExchange || !resolvedSegment || toNumber(requestedLotSize, 0) <= 0) {
+    instrumentDoc = await Instrument.findOne({ instrument_token: String(instrumentToken) })
+      .select('exchange segment lot_size')
       .lean();
     resolvedExchange = resolvedExchange || instrumentDoc?.exchange || 'NSE';
     resolvedSegment = resolvedSegment || instrumentDoc?.segment || 'NSE';
@@ -234,13 +247,34 @@ const placeOrder = asyncHandler(async (req, res) => {
     symbol,
     orderType,
   });
-  const spreadForBucket = getSpreadForBucket(pricingConfig, pricingBucket);
+  const spreadBucket = inferSpreadBucket({
+    exchange: resolvedExchange,
+    segment: resolvedSegment,
+    symbol,
+    orderType,
+  });
+  const spreadForBucket = getSpreadForBucket(pricingConfig, spreadBucket);
   const entryPricing = applySpreadToPrice({
     rawPrice: rawEntryPrice,
     side: sideNorm,
     spread: spreadForBucket,
   });
   const effectiveEntryPrice = entryPricing.effectivePrice;
+  const resolvedLotSize = Math.max(1, toNumber(requestedLotSize ?? instrumentDoc?.lot_size, 1));
+  const resolvedLots = resolveLots({
+    lots,
+    quantity: qtyNum,
+    lotSize: resolvedLotSize,
+  });
+  const entryBrokerageSnapshot = buildEntryBrokerageSnapshot({
+    pricing: pricingConfig,
+    bucket: pricingBucket,
+    side: sideNorm,
+    quantity: qtyNum,
+    lotSize: resolvedLotSize,
+    lots: resolvedLots,
+    effectivePrice: effectiveEntryPrice,
+  });
 
   // Calculate margin required
   const orderValue = effectiveEntryPrice * qtyNum;
@@ -286,16 +320,20 @@ const placeOrder = asyncHandler(async (req, res) => {
       exchange: resolvedExchange,
       segment: resolvedSegment,
       instrument_token: instrumentToken,
+      lot_size: resolvedLotSize,
+      lots: resolvedLots,
       validity,
       trigger_price: triggerPriceNum,
       disclosed_quantity: disclosedQuantity,
-      stop_loss: stopLossNum,
+      stop_loss: effectiveStopLossNum,
       target: targetNum,
       status,
       requires_approval: requiresApproval,
       approval_status: approvalStatus,
       margin_blocked: marginRequired,
       pricing_bucket: pricingBucket,
+      brokerage: entryBrokerageSnapshot.amount,
+      brokerage_breakdown: entryBrokerageSnapshot.breakdown,
       placed_at: new Date(),
     });
 
@@ -473,7 +511,7 @@ const modifyOrder = asyncHandler(async (req, res) => {
   const customerIdStr = req.user.customer_id;
   const brokerIdStr = req.user.stringBrokerId;
   const { id } = req.params;
-  const { price, quantity, triggerPrice, stopLoss, target } = req.body;
+  const { price, quantity, triggerPrice, stopLoss, target, lots, lotSize, lot_size } = req.body;
 
   const order = await OrderModel.findOne({
     _id: id,
@@ -513,6 +551,7 @@ const modifyOrder = asyncHandler(async (req, res) => {
   // Store old values
   const oldPrice = order.price;
   const oldQuantity = order.quantity;
+  const oldLots = order.lots;
 
   if (price !== undefined && price !== null) {
     const rawPrice = toNumber(price);
@@ -533,7 +572,13 @@ const modifyOrder = asyncHandler(async (req, res) => {
       symbol: order.symbol,
       orderType: order.order_type,
     });
-    const spreadForBucket = getSpreadForBucket(pricingConfig, pricingBucket);
+    const spreadBucket = inferSpreadBucket({
+      exchange: order.exchange,
+      segment: order.segment,
+      symbol: order.symbol,
+      orderType: order.order_type,
+    });
+    const spreadForBucket = getSpreadForBucket(pricingConfig, spreadBucket);
     const entryPricing = applySpreadToPrice({
       rawPrice,
       side: order.side,
@@ -558,6 +603,29 @@ const modifyOrder = asyncHandler(async (req, res) => {
     order.quantity = qty;
   }
 
+  const requestedModifyLotSize = lotSize ?? lot_size;
+  if (requestedModifyLotSize !== undefined && requestedModifyLotSize !== null) {
+    const nextLotSize = Math.max(1, toNumber(requestedModifyLotSize, 1));
+    order.lot_size = nextLotSize;
+  }
+
+  if (lots !== undefined && lots !== null) {
+    const nextLots = Number(lots);
+    if (!Number.isFinite(nextLots) || nextLots < 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'lots must be zero or a positive number.',
+      });
+    }
+    order.lots = nextLots;
+  }
+
+  order.lots = resolveLots({
+    lots: order.lots,
+    quantity: order.quantity,
+    lotSize: order.lot_size,
+  });
+
   if (triggerPrice !== undefined) order.trigger_price = triggerPrice;
   if (stopLoss !== undefined) {
     const normalizedStopLoss = Number(stopLoss);
@@ -580,6 +648,29 @@ const modifyOrder = asyncHandler(async (req, res) => {
     order.target = normalizedTarget;
   }
   order.modified_at = new Date();
+
+  const pricingConfig = await getClientPricingConfig({
+    brokerIdStr: String(brokerIdStr),
+    customerIdStr: String(customerIdStr),
+  });
+  const pricingBucket = order.pricing_bucket || inferPricingBucket({
+    exchange: order.exchange,
+    segment: order.segment,
+    symbol: order.symbol,
+    orderType: order.order_type,
+  });
+  const entryBrokerageSnapshot = buildEntryBrokerageSnapshot({
+    pricing: pricingConfig,
+    bucket: pricingBucket,
+    side: order.side,
+    quantity: order.quantity,
+    lotSize: order.lot_size,
+    lots: order.lots,
+    effectivePrice: order.effective_entry_price || order.price,
+  });
+  order.pricing_bucket = pricingBucket;
+  order.brokerage = entryBrokerageSnapshot.amount;
+  order.brokerage_breakdown = entryBrokerageSnapshot.breakdown;
 
   // Adjust margin if needed
   if (order.price !== oldPrice || order.quantity !== oldQuantity) {
@@ -609,6 +700,23 @@ const modifyOrder = asyncHandler(async (req, res) => {
       order.margin_blocked = newMargin;
       await fund.save();
     }
+  }
+
+  // Store modification snapshot in meta for activity feed
+  if (order.price !== oldPrice || order.quantity !== oldQuantity) {
+    order.meta = {
+      ...(order.meta || {}),
+      last_modification: {
+        old_price: oldPrice,
+        new_price: order.price,
+        old_quantity: oldQuantity,
+        new_quantity: order.quantity,
+        old_lots: oldLots,
+        new_lots: order.lots,
+        added_lots: (order.lots || 0) - (oldLots || 0),
+        modified_at: order.modified_at,
+      },
+    };
   }
 
   await order.save();

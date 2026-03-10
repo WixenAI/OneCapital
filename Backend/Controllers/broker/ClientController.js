@@ -14,6 +14,11 @@ import ClientPricingModel from '../../Model/Trading/ClientPricingModel.js';
 import HoldingModel from '../../Model/Trading/HoldingModel.js';
 import PositionsModel from '../../Model/Trading/PositionsModel.js';
 import UserWatchlistModel from '../../Model/UserWatchlistModel.js';
+import {
+  INITIAL_CLIENT_PRICING,
+  ensureClientPricingConfig,
+  normalizeClientPricing,
+} from '../../Utils/ClientPricingEngine.js';
 
 // Utility function
 const formatDate = (date) => {
@@ -46,94 +51,69 @@ const getCustomerOwnershipQuery = (customerId, brokerId, brokerIdStr) => ({
   $or: getBrokerOwnershipClauses(brokerId, brokerIdStr),
 });
 
-const DEFAULT_CLIENT_PRICING = Object.freeze({
+const INITIAL_CLIENT_PRICING_RESPONSE = Object.freeze({
   brokerage: {
-    mode: 'PERCENT',
-    cashFutureBuy: 0.08,
-    cashFutureSell: 0.08,
-    optionsBuyPerLot: 2,
-    optionsSellPerLot: 2,
+    cashPercent: INITIAL_CLIENT_PRICING.brokerage.cash.percent,
+    futurePercent: INITIAL_CLIENT_PRICING.brokerage.future.percent,
+    optionsPerLot: INITIAL_CLIENT_PRICING.brokerage.option.per_lot,
   },
   spread: {
-    cash: 0,
-    future: 0,
-    option: 0,
-    mcx: 0,
+    ...INITIAL_CLIENT_PRICING.spread,
   },
 });
 
-const toNumber = (value) => {
+const toNumber = (value, fallback = null) => {
   const n = Number(value);
-  return Number.isFinite(n) ? n : null;
+  return Number.isFinite(n) ? n : fallback;
 };
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
-const mapPricingDocToResponse = (doc) => ({
+const mapPricingConfigToResponse = (pricing) => ({
   brokerage: {
-    mode: doc?.brokerage?.cash_future?.mode || DEFAULT_CLIENT_PRICING.brokerage.mode,
-    cashFutureBuy:
-      doc?.brokerage?.cash_future?.buy ?? DEFAULT_CLIENT_PRICING.brokerage.cashFutureBuy,
-    cashFutureSell:
-      doc?.brokerage?.cash_future?.sell ?? DEFAULT_CLIENT_PRICING.brokerage.cashFutureSell,
-    optionsBuyPerLot:
-      doc?.brokerage?.options?.buy_per_lot ??
-      DEFAULT_CLIENT_PRICING.brokerage.optionsBuyPerLot,
-    optionsSellPerLot:
-      doc?.brokerage?.options?.sell_per_lot ??
-      DEFAULT_CLIENT_PRICING.brokerage.optionsSellPerLot,
+    cashPercent:
+      pricing?.brokerage?.cash?.percent ?? INITIAL_CLIENT_PRICING_RESPONSE.brokerage.cashPercent,
+    futurePercent:
+      pricing?.brokerage?.future?.percent ?? INITIAL_CLIENT_PRICING_RESPONSE.brokerage.futurePercent,
+    optionsPerLot:
+      pricing?.brokerage?.option?.per_lot ?? INITIAL_CLIENT_PRICING_RESPONSE.brokerage.optionsPerLot,
   },
   spread: {
-    cash: doc?.spread?.cash ?? DEFAULT_CLIENT_PRICING.spread.cash,
-    future: doc?.spread?.future ?? DEFAULT_CLIENT_PRICING.spread.future,
-    option: doc?.spread?.option ?? DEFAULT_CLIENT_PRICING.spread.option,
-    mcx: doc?.spread?.mcx ?? DEFAULT_CLIENT_PRICING.spread.mcx,
+    cash: pricing?.spread?.cash ?? INITIAL_CLIENT_PRICING_RESPONSE.spread.cash,
+    future: pricing?.spread?.future ?? INITIAL_CLIENT_PRICING_RESPONSE.spread.future,
+    option: pricing?.spread?.option ?? INITIAL_CLIENT_PRICING_RESPONSE.spread.option,
+    mcx: pricing?.spread?.mcx ?? INITIAL_CLIENT_PRICING_RESPONSE.spread.mcx,
   },
 });
 
-const sanitizePricingPayload = (payload = {}, base = DEFAULT_CLIENT_PRICING) => {
+const sanitizePricingPayload = (payload = {}, base = INITIAL_CLIENT_PRICING_RESPONSE) => {
   const incomingBrokerage = payload?.brokerage || {};
   const incomingSpread = payload?.spread || {};
 
-  const requestedMode = String(
-    incomingBrokerage?.cashFuture?.mode || incomingBrokerage?.mode || base.brokerage.mode
-  ).toUpperCase();
-  const mode = ['PERCENT', 'FLAT_PER_UNIT'].includes(requestedMode)
-    ? requestedMode
-    : base.brokerage.mode;
-
-  const cashFutureBuy = toNumber(
-    incomingBrokerage?.cashFuture?.buy ?? incomingBrokerage?.cashFutureBuy
-  );
-  const cashFutureSell = toNumber(
-    incomingBrokerage?.cashFuture?.sell ?? incomingBrokerage?.cashFutureSell
-  );
-  const optionsBuyPerLot = toNumber(
-    incomingBrokerage?.options?.buyPerLot ?? incomingBrokerage?.optionsBuyPerLot
-  );
-  const optionsSellPerLot = toNumber(
-    incomingBrokerage?.options?.sellPerLot ?? incomingBrokerage?.optionsSellPerLot
-  );
-
   const nextBrokerage = {
-    mode,
-    cashFutureBuy: clamp(
-      cashFutureBuy ?? base.brokerage.cashFutureBuy,
+    cashPercent: clamp(
+      toNumber(
+        incomingBrokerage?.cash?.percent ?? incomingBrokerage?.cashPercent,
+        base.brokerage.cashPercent
+      ),
       0,
-      mode === 'PERCENT' ? 100 : 100000
+      100
     ),
-    cashFutureSell: clamp(
-      cashFutureSell ?? base.brokerage.cashFutureSell,
+    futurePercent: clamp(
+      toNumber(
+        incomingBrokerage?.future?.percent ?? incomingBrokerage?.futurePercent,
+        base.brokerage.futurePercent
+      ),
       0,
-      mode === 'PERCENT' ? 100 : 100000
+      100
     ),
-    optionsBuyPerLot: clamp(
-      optionsBuyPerLot ?? base.brokerage.optionsBuyPerLot,
-      0,
-      100000
-    ),
-    optionsSellPerLot: clamp(
-      optionsSellPerLot ?? base.brokerage.optionsSellPerLot,
+    optionsPerLot: clamp(
+      toNumber(
+        incomingBrokerage?.option?.per_lot ??
+        incomingBrokerage?.option?.perLot ??
+        incomingBrokerage?.optionsPerLot,
+        base.brokerage.optionsPerLot
+      ),
       0,
       100000
     ),
@@ -153,6 +133,16 @@ const sanitizePricingPayload = (payload = {}, base = DEFAULT_CLIENT_PRICING) => 
 
   return { brokerage: nextBrokerage, spread: nextSpread };
 };
+
+const mapResponsePricingToStoredConfig = (pricing = INITIAL_CLIENT_PRICING_RESPONSE) =>
+  normalizeClientPricing({
+    brokerage: {
+      cash: { percent: pricing.brokerage.cashPercent },
+      future: { percent: pricing.brokerage.futurePercent },
+      option: { per_lot: pricing.brokerage.optionsPerLot },
+    },
+    spread: pricing.spread,
+  });
 
 /**
  * @desc     Get all clients for this broker
@@ -356,6 +346,12 @@ const createClient = asyncHandler(async (req, res) => {
     net_available_balance: 0,
     intraday: { available_limit: 0, used_limit: 0 },
     overnight: { available_limit: 0 },
+  });
+
+  await ensureClientPricingConfig({
+    brokerIdStr,
+    customerIdStr: newCustomer.customer_id,
+    updatedBy: brokerId,
   });
 
   res.status(201).json({
@@ -931,17 +927,25 @@ const getClientPricing = asyncHandler(async (req, res) => {
   const pricingDoc = await ClientPricingModel.findOne({
     broker_id_str: brokerIdStr,
     customer_id_str: customer.customer_id,
-  });
+  }).lean();
 
-  const pricing = pricingDoc
-    ? mapPricingDocToResponse(pricingDoc)
-    : DEFAULT_CLIENT_PRICING;
+  const pricingConfig = pricingDoc
+    ? normalizeClientPricing({
+        brokerage: pricingDoc.brokerage,
+        spread: pricingDoc.spread,
+      })
+    : await ensureClientPricingConfig({
+        brokerIdStr,
+        customerIdStr: customer.customer_id,
+        updatedBy: brokerId,
+      });
+  const pricing = mapPricingConfigToResponse(pricingConfig);
 
   res.status(200).json({
     success: true,
     customerId: customer.customer_id,
     pricing,
-    source: pricingDoc ? 'stored' : 'default',
+    source: pricingDoc ? 'stored' : 'seeded',
     updatedAt: pricingDoc?.updatedAt || null,
   });
 });
@@ -967,13 +971,14 @@ const updateClientPricing = asyncHandler(async (req, res) => {
     });
   }
 
-  const existing = await ClientPricingModel.findOne({
-    broker_id_str: brokerIdStr,
-    customer_id_str: customer.customer_id,
+  const existingConfig = await ensureClientPricingConfig({
+    brokerIdStr,
+    customerIdStr: customer.customer_id,
+    updatedBy: brokerId,
   });
-
-  const base = existing ? mapPricingDocToResponse(existing) : DEFAULT_CLIENT_PRICING;
+  const base = mapPricingConfigToResponse(existingConfig);
   const next = sanitizePricingPayload(req.body || {}, base);
+  const stored = mapResponsePricingToStoredConfig(next);
 
   const saved = await ClientPricingModel.findOneAndUpdate(
     {
@@ -984,23 +989,8 @@ const updateClientPricing = asyncHandler(async (req, res) => {
       $set: {
         broker_id_str: brokerIdStr,
         customer_id_str: customer.customer_id,
-        brokerage: {
-          cash_future: {
-            mode: next.brokerage.mode,
-            buy: next.brokerage.cashFutureBuy,
-            sell: next.brokerage.cashFutureSell,
-          },
-          options: {
-            buy_per_lot: next.brokerage.optionsBuyPerLot,
-            sell_per_lot: next.brokerage.optionsSellPerLot,
-          },
-        },
-        spread: {
-          cash: next.spread.cash,
-          future: next.spread.future,
-          option: next.spread.option,
-          mcx: next.spread.mcx,
-        },
+        brokerage: stored.brokerage,
+        spread: stored.spread,
         updated_by: brokerId,
       },
     },
@@ -1011,7 +1001,12 @@ const updateClientPricing = asyncHandler(async (req, res) => {
     success: true,
     message: 'Client pricing updated successfully.',
     customerId: customer.customer_id,
-    pricing: mapPricingDocToResponse(saved),
+    pricing: mapPricingConfigToResponse(
+      normalizeClientPricing({
+        brokerage: saved.brokerage,
+        spread: saved.spread,
+      })
+    ),
     updatedAt: saved.updatedAt,
   });
 });
@@ -1107,6 +1102,12 @@ const restoreClient = asyncHandler(async (req, res) => {
     net_available_balance: archivedFund.net_available_balance || 0,
     intraday: archivedFund.intraday || { available_limit: 0, used_limit: 0 },
     overnight: archivedFund.overnight || { available_limit: 0 },
+  });
+
+  await ensureClientPricingConfig({
+    brokerIdStr,
+    customerIdStr: restoredCustomer.customer_id,
+    updatedBy: brokerId,
   });
 
   // Restore orders if any

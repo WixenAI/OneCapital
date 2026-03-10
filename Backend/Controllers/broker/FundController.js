@@ -13,6 +13,12 @@ const toNumber = (value) => {
   return Number.isFinite(n) ? n : 0;
 };
 
+const formatCurrency = (value) =>
+  toNumber(value).toLocaleString('en-IN', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+
 const nonNegative = (value) => Math.max(0, toNumber(value));
 const normalizeOptionLimitPercent = (value) => {
   const n = Number(value);
@@ -60,6 +66,30 @@ const getFundSnapshot = (fund) => {
     optionChainLimit,
     optionChainLimitPercent,
   };
+};
+
+const getChangedFundFields = (beforeSnapshot, afterSnapshot) => {
+  const fields = [];
+
+  if (toNumber(beforeSnapshot?.depositedCash) !== toNumber(afterSnapshot?.depositedCash)) {
+    fields.push('deposited cash');
+  }
+  if (toNumber(beforeSnapshot?.openingBalance) !== toNumber(afterSnapshot?.openingBalance)) {
+    fields.push('opening balance');
+  }
+  if (toNumber(beforeSnapshot?.intradayAvailable) !== toNumber(afterSnapshot?.intradayAvailable)) {
+    fields.push('intraday available');
+  }
+  if (toNumber(beforeSnapshot?.longTermAvailable) !== toNumber(afterSnapshot?.longTermAvailable)) {
+    fields.push('long-term available');
+  }
+  if (
+    toNumber(beforeSnapshot?.optionChainLimitPercent) !== toNumber(afterSnapshot?.optionChainLimitPercent)
+  ) {
+    fields.push('option limit percentage');
+  }
+
+  return fields;
 };
 
 const applyFundSnapshot = (fund, snapshot) => {
@@ -223,13 +253,17 @@ const addFundsToClient = asyncHandler(async (req, res) => {
 
   await fund.save();
   const afterSnapshot = getFundSnapshot(fund);
+  const amountAdded = Number(amount);
+  const fundAddNote = notes
+    ? `Manual fund add recorded. Broker note: ${notes}`
+    : 'Manual fund add recorded.';
 
   await writeAuditSuccess({
     req,
     type: 'transaction',
     eventType: 'FUND_MANUAL_ADD',
     category: 'funds',
-    message: `Broker added funds for customer ${customer.customer_id}`,
+    message: `Broker added ${formatCurrency(amountAdded)} to customer ${customer.customer_id}. Deposited cash changed from ${formatCurrency(beforeSnapshot.depositedCash)} to ${formatCurrency(afterSnapshot.depositedCash)}.`,
     target: {
       type: 'customer',
       id: customer._id,
@@ -248,7 +282,7 @@ const addFundsToClient = asyncHandler(async (req, res) => {
       customer_id: customer._id,
       customer_id_str: customer.customer_id,
     },
-    amountDelta: Number(amount),
+    amountDelta: amountAdded,
     fundBefore: {
       depositedCash: beforeSnapshot.depositedCash,
       availableCash: beforeSnapshot.availableCash,
@@ -271,7 +305,13 @@ const addFundsToClient = asyncHandler(async (req, res) => {
       longTermAvailable: afterSnapshot.longTermAvailable,
       optionChainLimitPercent: afterSnapshot.optionChainLimitPercent,
     },
-    note: notes || 'Funds added by broker',
+    note: fundAddNote,
+    metadata: {
+      amountAdded,
+      previousDepositedCash: beforeSnapshot.depositedCash,
+      newDepositedCash: afterSnapshot.depositedCash,
+      changedFields: 'deposited cash',
+    },
   });
 
   console.log(`[Broker] Added ₹${amount} to client ${customerId}. New balance: ₹${fund.net_available_balance}`);
@@ -422,13 +462,18 @@ const updateClientFunds = asyncHandler(async (req, res) => {
 
   await fund.save();
   const updatedSnapshot = getFundSnapshot(fund);
+  const changedFields = getChangedFundFields(previousSnapshot, updatedSnapshot);
+  const editDelta = nextDepositedCash - previousSnapshot.depositedCash;
+  const fundEditNote = note
+    ? `Manual fund update recorded. Broker note: ${note}`
+    : 'Manual fund update recorded.';
 
   await writeAuditSuccess({
     req,
     type: 'transaction',
     eventType: 'FUND_MANUAL_EDIT',
     category: 'funds',
-    message: `Broker edited funds for customer ${customer.customer_id}`,
+    message: `Broker updated funds for customer ${customer.customer_id}. Deposited cash changed from ${formatCurrency(previousSnapshot.depositedCash)} to ${formatCurrency(updatedSnapshot.depositedCash)}.`,
     target: {
       type: 'customer',
       id: customer._id,
@@ -447,7 +492,7 @@ const updateClientFunds = asyncHandler(async (req, res) => {
       customer_id: customer._id,
       customer_id_str: customer.customer_id,
     },
-    amountDelta: nextDepositedCash - previousSnapshot.depositedCash,
+    amountDelta: editDelta,
     fundBefore: {
       depositedCash: previousSnapshot.depositedCash,
       availableCash: previousSnapshot.availableCash,
@@ -470,7 +515,13 @@ const updateClientFunds = asyncHandler(async (req, res) => {
       longTermAvailable: updatedSnapshot.longTermAvailable,
       optionChainLimitPercent: updatedSnapshot.optionChainLimitPercent,
     },
-    note: note || 'Funds edited by broker',
+    note: fundEditNote,
+    metadata: {
+      amountChanged: editDelta,
+      previousDepositedCash: previousSnapshot.depositedCash,
+      newDepositedCash: updatedSnapshot.depositedCash,
+      changedFields: changedFields.join(', ') || 'deposited cash',
+    },
   });
 
   res.status(200).json({

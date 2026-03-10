@@ -315,6 +315,16 @@ const getActivityFeed = asyncHandler(async (req, res) => {
     .limit(safeLimit)
     .select('symbol side quantity price order_status status customer_id_str createdAt');
 
+  // Get recently modified orders
+  const recentModifiedOrders = await OrderModel.find({
+    $or: orderScope,
+    modified_at: { $exists: true, $ne: null },
+    'meta.last_modification': { $exists: true },
+  })
+    .sort({ modified_at: -1 })
+    .limit(safeLimit)
+    .select('symbol side quantity price lots order_status status customer_id_str modified_at meta');
+
   // Get recent customers
   const recentCustomers = await CustomerModel.find({ $or: customerScope })
     .sort({ createdAt: -1 })
@@ -337,6 +347,23 @@ const getActivityFeed = asyncHandler(async (req, res) => {
       status: order.order_status || order.status,
       user: order.customer_id_str,
       timestamp: order.createdAt,
+    });
+  });
+
+  recentModifiedOrders.forEach(order => {
+    const mod = order.meta?.last_modification;
+    const addedLots = mod?.added_lots ?? 0;
+    const oldPrice = mod?.old_price != null ? `₹${Number(mod.old_price).toFixed(2)}` : '?';
+    const newPrice = mod?.new_price != null ? `₹${Number(mod.new_price).toFixed(2)}` : '?';
+    const oldQty = mod?.old_quantity ?? '?';
+    const newQty = mod?.new_quantity ?? order.quantity;
+    activities.push({
+      type: 'order_modify',
+      message: `Modified ${order.side} ${order.symbol} | Qty: ${oldQty} → ${newQty}${addedLots > 0 ? ` (+${addedLots} lots)` : ''} | Avg: ${oldPrice} → ${newPrice}`,
+      status: order.order_status || order.status,
+      user: order.customer_id_str,
+      timestamp: order.modified_at,
+      meta: mod || null,
     });
   });
 

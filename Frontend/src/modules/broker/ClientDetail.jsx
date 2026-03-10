@@ -13,6 +13,7 @@ const toNumber = (value, fallback = 0) => {
 };
 
 const readNumber = (value) => {
+  if (value === null || value === undefined || value === '') return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
 };
@@ -43,6 +44,9 @@ const ClientDetail = () => {
   const [actionConfirm, setActionConfirm] = useState(null);
   const [actionConfirmSubmitting, setActionConfirmSubmitting] = useState(false);
   const [actionConfirmError, setActionConfirmError] = useState(null);
+  const [settlementWarning, setSettlementWarning] = useState(false);
+  const [settlementRunning, setSettlementRunning] = useState(false);
+  const [settlementResult, setSettlementResult] = useState(null);
 
   const [client, setClient] = useState(null);
   const [ledger, setLedger] = useState(null);
@@ -378,14 +382,7 @@ const ClientDetail = () => {
     if (!confirm(`Exit ${order.symbol} ${order.side} position for ${client?.name}?`)) return;
 
     const liveLtp = Number(order.ltp || order.price || 0);
-    const jobbing = Number(order.jobbin_price || 0.08);
-    let closedLtp = liveLtp;
-    if (liveLtp > 0 && jobbing > 0) {
-      closedLtp = order.side === 'BUY'
-        ? liveLtp - (liveLtp * (jobbing / 100))
-        : liveLtp + (liveLtp * (jobbing / 100));
-    }
-    closedLtp = Number(closedLtp.toFixed(4));
+    const closedLtp = Number(liveLtp.toFixed(4));
 
     try {
       await brokerUpdateOrder({
@@ -552,6 +549,40 @@ const ClientDetail = () => {
       console.error('Failed to login as client:', err);
     } finally {
       setActionLoading(false);
+    }
+  };
+
+  const getNextMondayIst = () => {
+    const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+    const nowIst = new Date(Date.now() + IST_OFFSET_MS);
+    const day = nowIst.getUTCDay();
+    const daysUntilMonday = day === 1 ? 7 : (1 - day + 7) % 7;
+    const nextMonday = new Date(nowIst);
+    nextMonday.setUTCDate(nextMonday.getUTCDate() + daysUntilMonday);
+    nextMonday.setUTCHours(0, 0, 0, 0);
+    return new Date(nextMonday.getTime() - IST_OFFSET_MS);
+  };
+
+  const nextMondayLabel = getNextMondayIst().toLocaleDateString('en-IN', {
+    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Asia/Kolkata',
+  });
+
+  const handleSettleClient = () => {
+    setSettlementResult(null);
+    setSettlementWarning(true);
+  };
+
+  const doRunClientSettlement = async () => {
+    setSettlementRunning(true);
+    setSettlementResult(null);
+    try {
+      const res = await brokerApi.runCustomerSettlement(clientId, {});
+      setSettlementResult({ ok: true, message: res?.message || 'Settlement completed.' });
+    } catch (err) {
+      const msg = err?.response?.data?.message || err?.message || 'Settlement failed.';
+      setSettlementResult({ ok: false, message: msg });
+    } finally {
+      setSettlementRunning(false);
     }
   };
 
@@ -1071,6 +1102,41 @@ const ClientDetail = () => {
               </div>
             </section>
 
+            {/* Weekly Settlement */}
+            <section className="px-3 sm:px-4 py-2">
+              <div className="bg-white rounded-xl overflow-hidden shadow-sm border border-gray-100">
+                <div className="px-3 sm:px-4 py-2.5 border-b border-gray-100 flex items-center justify-between">
+                  <h3 className="text-sm sm:text-base font-bold">Weekly Settlement</h3>
+                  <span className="text-[10px] font-semibold text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-100">Resets P&L</span>
+                </div>
+                <div className="px-3 sm:px-4 py-3 space-y-2">
+                  <p className="text-[11px] text-[#617589] leading-relaxed">
+                    Crystallises this client's realized P&L for the week. Their net cash and portfolio P&L counter will reset to ₹0. Contact the client before proceeding.
+                  </p>
+                  {settlementResult && (
+                    <div className={`flex items-start gap-2 rounded-lg px-3 py-2 text-xs font-medium ${
+                      settlementResult.ok ? 'bg-green-50 text-green-700 border border-green-100' : 'bg-red-50 text-red-700 border border-red-100'
+                    }`}>
+                      <span className="material-symbols-outlined text-[14px] mt-0.5 shrink-0">
+                        {settlementResult.ok ? 'check_circle' : 'error'}
+                      </span>
+                      {settlementResult.message}
+                    </div>
+                  )}
+                  <button
+                    onClick={handleSettleClient}
+                    disabled={settlementRunning}
+                    className="w-full h-10 bg-amber-500 hover:bg-amber-600 disabled:opacity-60 text-white text-sm font-bold rounded-xl flex items-center justify-center gap-2 transition-colors"
+                  >
+                    <span className="material-symbols-outlined text-[16px]">
+                      {settlementRunning ? 'hourglass_top' : 'account_balance'}
+                    </span>
+                    {settlementRunning ? 'Running Settlement...' : 'Settle This Client'}
+                  </button>
+                </div>
+              </div>
+            </section>
+
             {/* Funds Info */}
             {client.funds && (
               <section className="px-3 sm:px-4 py-2">
@@ -1347,6 +1413,85 @@ const ClientDetail = () => {
                 className="flex-1 h-11 bg-red-500 text-white rounded-xl font-bold text-sm"
               >
                 {actionLoading ? 'Deleting...' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Settlement Warning Modal */}
+      {settlementWarning && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div className="bg-white w-full sm:max-w-sm rounded-t-2xl sm:rounded-2xl shadow-xl overflow-hidden">
+            {/* Header */}
+            <div className="bg-amber-50 border-b border-amber-100 px-5 pt-5 pb-4">
+              <div className="flex items-start gap-3">
+                <div className="size-11 rounded-full bg-amber-100 flex items-center justify-center shrink-0 mt-0.5">
+                  <span className="material-symbols-outlined text-amber-600 text-[22px]">warning</span>
+                </div>
+                <div>
+                  <p className="text-[#111418] font-bold text-base leading-snug">
+                    Settle {client?.name}&apos;s Account?
+                  </p>
+                  <p className="text-amber-700 text-xs font-medium mt-0.5">Review carefully before proceeding</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Warning Body */}
+            <div className="px-5 py-4 space-y-3">
+              <div className="rounded-xl bg-red-50 border border-red-100 px-4 py-3">
+                <p className="text-red-700 text-xs font-bold uppercase tracking-wider mb-2">This will reset for this client:</p>
+                <ul className="space-y-1.5">
+                  {[
+                    'Net Cash P&L balance → resets to ₹0',
+                    'Portfolio realized P&L counter → restarts from now',
+                    'Weekly P&L boundary → new week starts from this timestamp',
+                  ].map((item) => (
+                    <li key={item} className="flex items-start gap-2 text-xs text-red-700">
+                      <span className="material-symbols-outlined text-red-500 text-[13px] mt-0.5 shrink-0">cancel</span>
+                      {item}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              <div className="rounded-xl bg-blue-50 border border-blue-100 px-4 py-3">
+                <p className="text-[#137fec] text-xs font-bold uppercase tracking-wider mb-1.5">Next Auto-Run for All Clients</p>
+                <p className="text-[#111418] text-sm font-bold">{nextMondayLabel}</p>
+                <p className="text-[#617589] text-xs mt-0.5">at 12:00 AM IST (Monday)</p>
+              </div>
+
+              <div className="rounded-xl bg-amber-50 border border-amber-100 px-4 py-3 space-y-1.5">
+                {[
+                  `Confirm you have contacted ${client?.name} before settling.`,
+                  'Ensure outstanding losses are recovered or profits transferred.',
+                  'Any open positions will continue to accumulate P&L after this reset.',
+                ].map((item) => (
+                  <div key={item} className="flex items-start gap-2 text-xs text-amber-800">
+                    <span className="material-symbols-outlined text-amber-500 text-[13px] mt-0.5 shrink-0">info</span>
+                    {item}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Actions */}
+            <div className="px-5 pb-6 pt-1 flex gap-3">
+              <button
+                onClick={() => setSettlementWarning(false)}
+                className="flex-1 h-11 bg-gray-100 text-[#111418] rounded-xl font-bold text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  setSettlementWarning(false);
+                  doRunClientSettlement();
+                }}
+                className="flex-1 h-11 bg-amber-500 hover:bg-amber-600 text-white rounded-xl font-bold text-sm"
+              >
+                Proceed Anyway
               </button>
             </div>
           </div>

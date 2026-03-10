@@ -15,6 +15,11 @@ const toNumber = (value) => {
   return Number.isFinite(n) ? n : 0;
 };
 
+const formatUtcStamp = (value) => {
+  const date = toValidDate(value);
+  return date ? date.toISOString() : '';
+};
+
 const shouldRunAutoSettlement = (broker) => {
   const configured = broker?.settings?.settlement?.auto_weekly_settlement_enabled;
   if (configured === undefined || configured === null) return true;
@@ -24,6 +29,7 @@ const shouldRunAutoSettlement = (broker) => {
 const runWeeklySettlementForBroker = async ({
   brokerId,
   brokerIdStr,
+  customerIdStr = null,
   mode = 'manual',
   effectiveAt = new Date(),
   note = '',
@@ -41,7 +47,10 @@ const runWeeklySettlementForBroker = async ({
   const { weekStartUtc, weekEndUtc } = getIstWeekRangeFromDate(safeEffectiveAt);
   const runRef = createSettlementReference(safeEffectiveAt);
 
-  const funds = await FundModel.find({ broker_id_str: brokerIdStr })
+  const fundQuery = { broker_id_str: brokerIdStr };
+  if (customerIdStr) fundQuery.customer_id_str = customerIdStr;
+
+  const funds = await FundModel.find(fundQuery)
     .select('_id customer_id customer_id_str broker_id_str pnl_balance transactions last_calculated_at');
 
   let created = 0;
@@ -84,6 +93,9 @@ const runWeeklySettlementForBroker = async ({
         timestamp: safeEffectiveAt,
       });
       fund.last_calculated_at = safeEffectiveAt;
+      // Reset pnl_balance to 0 so net cash and available cash reflect
+      // only post-settlement P&L going forward.
+      fund.pnl_balance = 0;
 
       await fund.save();
       created += 1;
@@ -110,6 +122,7 @@ const runWeeklySettlementForBroker = async ({
     force: Boolean(force),
     note: String(note || ''),
     errors,
+    ...(customerIdStr ? { customerIdStr } : {}),
   };
 
   await writeAuditSuccess({
@@ -117,13 +130,17 @@ const runWeeklySettlementForBroker = async ({
     type: 'transaction',
     eventType: 'WEEKLY_SETTLEMENT_RUN',
     category: 'funds',
-    message: `Weekly settlement run (${mode}) for broker ${brokerIdStr}`,
+    message: `Weekly settlement run ${runRef} for broker ${brokerIdStr} completed in ${mode} mode. ${created} fund records were settled, ${skippedExisting} were already settled, and ${failed} failed.`,
+    entity: {
+      type: 'settlement_run',
+      ref: runRef,
+    },
     broker: {
       broker_id: brokerId,
       broker_id_str: brokerIdStr,
     },
     metadata: summary,
-    note: note || `Weekly settlement run (${mode})`,
+    note: `Settlement window ${formatUtcStamp(weekStartUtc)} to ${formatUtcStamp(weekEndUtc)}. Settled at ${formatUtcStamp(safeEffectiveAt)}.${note ? ` ${note}` : ''}`,
     source: req ? 'api' : 'system',
   });
 
@@ -133,7 +150,11 @@ const runWeeklySettlementForBroker = async ({
       type: 'transaction',
       eventType: 'WEEKLY_SETTLEMENT_PARTIAL_FAILURE',
       category: 'funds',
-      message: `Weekly settlement completed with failures for broker ${brokerIdStr}`,
+      message: `Weekly settlement run ${runRef} for broker ${brokerIdStr} completed with ${failed} failed fund updates.`,
+      entity: {
+        type: 'settlement_run',
+        ref: runRef,
+      },
       broker: {
         broker_id: brokerId,
         broker_id_str: brokerIdStr,
@@ -143,7 +164,7 @@ const runWeeklySettlementForBroker = async ({
         failed,
         errors,
       },
-      note: 'Some fund documents failed during weekly settlement',
+      note: 'Some customer fund records could not be updated during weekly settlement.',
       source: req ? 'api' : 'system',
     });
   }

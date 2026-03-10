@@ -28,11 +28,9 @@ const MODULES = [
 const DEFAULT_OPTION_CHAIN_PERCENT = 10;
 
 const DEFAULT_BROKERAGE_FORM = {
-  mode: 'PERCENT',
-  cashFutureBuy: '0.08',
-  cashFutureSell: '0.08',
-  optionsBuyPerLot: '2',
-  optionsSellPerLot: '2',
+  cashPercent: '',
+  futurePercent: '',
+  optionsPerLot: '',
 };
 
 const DEFAULT_SPREAD_FORM = {
@@ -104,23 +102,34 @@ const normalizePricingResponse = (response) => {
   const pricing = response?.pricing || response?.data?.pricing || {};
   const brokerage = pricing?.brokerage || {};
   const spread = pricing?.spread || {};
+  const legacyCashFutureBuy = brokerage.cashFutureBuy ?? brokerage.cash_future?.buy;
+  const legacyCashFutureSell = brokerage.cashFutureSell ?? brokerage.cash_future?.sell;
+  const legacyOptionsBuyPerLot = brokerage.optionsBuyPerLot ?? brokerage.options?.buy_per_lot;
+  const legacyOptionsSellPerLot = brokerage.optionsSellPerLot ?? brokerage.options?.sell_per_lot;
 
   return {
     brokerage: {
-      mode: String(brokerage.mode || DEFAULT_BROKERAGE_FORM.mode).toUpperCase() === 'FLAT_PER_UNIT'
-        ? 'FLAT_PER_UNIT'
-        : 'PERCENT',
-      cashFutureBuy: String(
-        brokerage.cashFutureBuy ?? DEFAULT_BROKERAGE_FORM.cashFutureBuy
+      cashPercent: String(
+        brokerage.cashPercent ??
+          brokerage.cash?.percent ??
+          legacyCashFutureBuy ??
+          legacyCashFutureSell ??
+          DEFAULT_BROKERAGE_FORM.cashPercent
       ),
-      cashFutureSell: String(
-        brokerage.cashFutureSell ?? DEFAULT_BROKERAGE_FORM.cashFutureSell
+      futurePercent: String(
+        brokerage.futurePercent ??
+          brokerage.future?.percent ??
+          legacyCashFutureBuy ??
+          legacyCashFutureSell ??
+          DEFAULT_BROKERAGE_FORM.futurePercent
       ),
-      optionsBuyPerLot: String(
-        brokerage.optionsBuyPerLot ?? DEFAULT_BROKERAGE_FORM.optionsBuyPerLot
-      ),
-      optionsSellPerLot: String(
-        brokerage.optionsSellPerLot ?? DEFAULT_BROKERAGE_FORM.optionsSellPerLot
+      optionsPerLot: String(
+        brokerage.optionsPerLot ??
+          brokerage.option?.per_lot ??
+          brokerage.option?.perLot ??
+          legacyOptionsBuyPerLot ??
+          legacyOptionsSellPerLot ??
+          DEFAULT_BROKERAGE_FORM.optionsPerLot
       ),
     },
     spread: {
@@ -350,11 +359,9 @@ const Management = () => {
 
     const payload = {
       brokerage: {
-        mode: brokerageForm.mode,
-        cashFutureBuy: clampNonNegative(brokerageForm.cashFutureBuy),
-        cashFutureSell: clampNonNegative(brokerageForm.cashFutureSell),
-        optionsBuyPerLot: clampNonNegative(brokerageForm.optionsBuyPerLot),
-        optionsSellPerLot: clampNonNegative(brokerageForm.optionsSellPerLot),
+        cashPercent: clampNonNegative(brokerageForm.cashPercent),
+        futurePercent: clampNonNegative(brokerageForm.futurePercent),
+        optionsPerLot: clampNonNegative(brokerageForm.optionsPerLot),
       },
     };
 
@@ -645,76 +652,46 @@ const Management = () => {
 
                   {activeModule === 'brokerage' && (
                     <div className="grid grid-cols-1 gap-2.5">
-                      <div className="rounded-xl border border-gray-200 p-3">
-                        <p className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-[#617589]">Cash & Future Mode</p>
-                        <div className="grid grid-cols-2 gap-2">
-                          {['PERCENT', 'FLAT_PER_UNIT'].map((mode) => (
-                            <button
-                              key={mode}
-                              onClick={() => setBrokerageForm((prev) => ({ ...prev, mode }))}
-                              className={`h-10 rounded-lg border text-xs font-bold ${
-                                brokerageForm.mode === mode
-                                  ? 'border-[#137fec] bg-[#137fec]/10 text-[#137fec]'
-                                  : 'border-gray-300 text-[#617589]'
-                              }`}
-                            >
-                              {mode === 'PERCENT' ? '%' : '₹/Unit'}
-                            </button>
-                          ))}
-                        </div>
+                      <div className="rounded-xl border border-dashed border-[#137fec]/30 bg-[#137fec]/5 p-3">
+                        <p className="text-[11px] font-semibold uppercase tracking-wider text-[#617589]">Brokerage Rule</p>
+                        <p className="mt-1 text-xs text-[#111418]">Cash and futures use percentage on order value.</p>
+                        <p className="text-xs text-[#111418]">Options use rupees per lot.</p>
                       </div>
 
                       <label className="rounded-xl border border-gray-200 p-3">
-                        <p className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-[#617589]">
-                          Cash & Future Buy ({brokerageForm.mode === 'PERCENT' ? '%' : '₹/Unit'})
-                        </p>
+                        <p className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-[#617589]">Cash Brokerage (%)</p>
                         <input
                           type="number"
                           min="0"
-                          value={brokerageForm.cashFutureBuy}
+                          value={brokerageForm.cashPercent}
                           onChange={(event) =>
-                            setBrokerageForm((prev) => ({ ...prev, cashFutureBuy: event.target.value }))
+                            setBrokerageForm((prev) => ({ ...prev, cashPercent: event.target.value }))
                           }
                           className="w-full bg-transparent text-lg font-bold text-[#111418] outline-none"
                         />
                       </label>
 
                       <label className="rounded-xl border border-gray-200 p-3">
-                        <p className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-[#617589]">
-                          Cash & Future Sell ({brokerageForm.mode === 'PERCENT' ? '%' : '₹/Unit'})
-                        </p>
+                        <p className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-[#617589]">Futures Brokerage (%)</p>
                         <input
                           type="number"
                           min="0"
-                          value={brokerageForm.cashFutureSell}
+                          value={brokerageForm.futurePercent}
                           onChange={(event) =>
-                            setBrokerageForm((prev) => ({ ...prev, cashFutureSell: event.target.value }))
+                            setBrokerageForm((prev) => ({ ...prev, futurePercent: event.target.value }))
                           }
                           className="w-full bg-transparent text-lg font-bold text-[#111418] outline-none"
                         />
                       </label>
 
                       <label className="rounded-xl border border-gray-200 p-3">
-                        <p className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-[#617589]">Options Buy (₹/Lot)</p>
+                        <p className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-[#617589]">Options Brokerage (₹/Lot)</p>
                         <input
                           type="number"
                           min="0"
-                          value={brokerageForm.optionsBuyPerLot}
+                          value={brokerageForm.optionsPerLot}
                           onChange={(event) =>
-                            setBrokerageForm((prev) => ({ ...prev, optionsBuyPerLot: event.target.value }))
-                          }
-                          className="w-full bg-transparent text-lg font-bold text-[#111418] outline-none"
-                        />
-                      </label>
-
-                      <label className="rounded-xl border border-gray-200 p-3">
-                        <p className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-[#617589]">Options Sell (₹/Lot)</p>
-                        <input
-                          type="number"
-                          min="0"
-                          value={brokerageForm.optionsSellPerLot}
-                          onChange={(event) =>
-                            setBrokerageForm((prev) => ({ ...prev, optionsSellPerLot: event.target.value }))
+                            setBrokerageForm((prev) => ({ ...prev, optionsPerLot: event.target.value }))
                           }
                           className="w-full bg-transparent text-lg font-bold text-[#111418] outline-none"
                         />
