@@ -9,6 +9,7 @@ import { useMarketData } from '../../context/SocketContext';
 import useCustomerTradingGate from '../../hooks/useCustomerTradingGate';
 import { useAuth } from '../../context/AuthContext';
 import { readSessionCache, writeSessionCache, clearSessionCache } from '../../utils/sessionCache';
+import { OrdersWarningBanner } from '../../components/shared/WarningBanner';
 
 const ORDERS_CACHE_KEY = 'orders_tab_v1';
 const ORDERS_CACHE_TTL_MS = 30 * 1000;
@@ -630,6 +631,9 @@ const Orders = () => {
           </div>
         )}
       </div>
+
+      {/* Admin Warning Banner */}
+      <OrdersWarningBanner />
 
       <div className="px-3 sm:px-4 pb-2 flex justify-between items-center">
         <p className="text-[#617589] dark:text-[#9cb7aa] text-[10px] sm:text-xs font-medium uppercase tracking-wider">

@@ -859,32 +859,57 @@ const ClientDetail = () => {
             </div>
             <div className="text-center">
               <h2 className="text-lg sm:text-xl font-bold leading-tight mb-1">{client.name}</h2>
-              <div className="flex items-center justify-center gap-2 text-xs sm:text-sm text-[#617589]">
+              <div className="flex items-center justify-center gap-2 text-xs sm:text-sm text-[#617589] flex-wrap">
                 <span className={`px-2 py-0.5 rounded text-[10px] sm:text-xs font-bold uppercase ${
                   client.status === 'blocked' ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'
                 }`}>{client.status}</span>
+                {client.blockedByAdmin && (
+                  <span className="px-2 py-0.5 rounded text-[10px] sm:text-xs font-bold uppercase bg-purple-100 text-purple-700">
+                    Admin Suspended
+                  </span>
+                )}
                 <span>ID: {client.id || clientId}</span>
               </div>
             </div>
           </div>
         </section>
 
+        {/* Admin Suspension Banner */}
+        {client.blockedByAdmin && (
+          <section className="px-4 py-3">
+            <div className="bg-purple-50 border border-purple-200 rounded-xl p-4 flex items-start gap-3">
+              <span className="material-symbols-outlined text-purple-600 text-[24px] shrink-0">admin_panel_settings</span>
+              <div>
+                <p className="text-purple-800 text-sm font-bold">Account Suspended by Admin</p>
+                <p className="text-purple-600 text-xs mt-1">
+                  {client.blockReason || 'This account has been suspended by an administrator.'}
+                </p>
+                <p className="text-purple-600 text-xs mt-1">Broker controls are disabled. Contact admin to restore access.</p>
+              </div>
+            </div>
+          </section>
+        )}
+
         {/* Action Buttons */}
         <section className="bg-white px-4 pb-4">
           <button
             onClick={handleLoginAsClient}
-            disabled={actionLoading || client.status === 'blocked'}
+            disabled={actionLoading || client.status === 'blocked' || client.blockedByAdmin}
             className={`w-full flex items-center justify-center gap-2 h-11 sm:h-12 rounded-lg font-bold shadow-sm active:scale-[0.98] transition-all ${
-              client.status === 'blocked' ? 'bg-gray-200 text-gray-400 cursor-not-allowed' : 'bg-[#137fec] hover:bg-blue-600 text-white'
+              client.status === 'blocked' || client.blockedByAdmin ? 'bg-gray-200 text-gray-400 cursor-not-allowed' : 'bg-[#137fec] hover:bg-blue-600 text-white'
             }`}
+            title={client.blockedByAdmin ? 'Account suspended by admin' : undefined}
           >
             <span className="material-symbols-outlined text-[18px] sm:text-[20px]">login</span>
             <span className="text-sm sm:text-base">{actionLoading ? 'Loading...' : 'Login as Client'}</span>
           </button>
 
           {/* Broker Controls */}
-          <div className="mt-4 sm:mt-6 pt-4 border-t border-gray-100">
-            <h3 className="text-[10px] sm:text-xs font-bold text-[#617589] uppercase tracking-wider mb-2 sm:mb-3 pl-1">Broker Controls</h3>
+          <div className={`mt-4 sm:mt-6 pt-4 border-t border-gray-100 ${client.blockedByAdmin ? 'opacity-50 pointer-events-none' : ''}`}>
+            <h3 className="text-[10px] sm:text-xs font-bold text-[#617589] uppercase tracking-wider mb-2 sm:mb-3 pl-1">
+              Broker Controls
+              {client.blockedByAdmin && <span className="ml-2 text-purple-600">(Admin suspended)</span>}
+            </h3>
             <div className="flex flex-col gap-2 sm:gap-3">
               {/* Block Account Toggle */}
               <div className="flex items-center justify-between bg-gray-50 p-3 rounded-xl">
@@ -902,7 +927,7 @@ const ClientDetail = () => {
                     type="checkbox"
                     checked={client.status === 'blocked'}
                     onChange={handleBlock}
-                    disabled={actionLoading}
+                    disabled={actionLoading || client.blockedByAdmin}
                     className="sr-only peer"
                     id="blockToggle"
                   />
@@ -920,7 +945,7 @@ const ClientDetail = () => {
               </div>
 
               {/* Stop Trading Toggle */}
-              <div className={`flex items-center justify-between bg-gray-50 p-3 rounded-xl ${client.status === 'blocked' ? 'opacity-50 pointer-events-none' : ''}`}>
+              <div className={`flex items-center justify-between bg-gray-50 p-3 rounded-xl ${client.status === 'blocked' || client.blockedByAdmin ? 'opacity-50 pointer-events-none' : ''}`}>
                 <div className="flex items-center gap-2 sm:gap-3">
                   <div className="bg-white text-red-500 p-2 rounded-full shadow-sm">
                     <span className="material-symbols-outlined text-[18px] sm:text-[20px]">do_not_disturb</span>
@@ -935,7 +960,7 @@ const ClientDetail = () => {
                     type="checkbox"
                     checked={!client.tradingEnabled}
                     onChange={handleToggleTrading}
-                    disabled={actionLoading || client.status === 'blocked'}
+                    disabled={actionLoading || client.status === 'blocked' || client.blockedByAdmin}
                     className="sr-only peer"
                     id="tradingToggle"
                   />
@@ -953,7 +978,7 @@ const ClientDetail = () => {
               </div>
 
               {/* Holdings Exit Toggle */}
-              <div className={`flex items-center justify-between bg-gray-50 p-3 rounded-xl ${client.status === 'blocked' ? 'opacity-50 pointer-events-none' : ''}`}>
+              <div className={`flex items-center justify-between bg-gray-50 p-3 rounded-xl ${client.status === 'blocked' || client.blockedByAdmin ? 'opacity-50 pointer-events-none' : ''}`}>
                 <div className="flex items-center gap-2 sm:gap-3">
                   <div className={`p-2 rounded-full shadow-sm bg-white ${client.holdingsExitAllowed ? 'text-emerald-600' : 'text-gray-400'}`}>
                     <span className="material-symbols-outlined text-[18px] sm:text-[20px]">
@@ -972,7 +997,7 @@ const ClientDetail = () => {
                     type="checkbox"
                     checked={!!client.holdingsExitAllowed}
                     onChange={handleToggleHoldingsExit}
-                    disabled={actionLoading || client.status === 'blocked'}
+                    disabled={actionLoading || client.status === 'blocked' || client.blockedByAdmin}
                     className="sr-only peer"
                     id="holdingsExitToggle"
                   />

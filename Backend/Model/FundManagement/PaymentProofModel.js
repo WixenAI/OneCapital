@@ -14,8 +14,10 @@ const PaymentProofSchema = new Schema({
   payment_method: { type: String, enum: ['upi'], default: 'upi' },
   payment_reference: { type: String },
   payment_date: { type: Date },
+  utr_number: { type: String }, // UTR or transaction ID (optional, user-provided)
+  transaction_id: { type: String }, // Alternative reference ID (optional)
 
-  // Proof upload details (optional until user uploads proof)
+  // Proof upload details (DEPRECATED - screenshot proof no longer required)
   proof_type: { type: String, enum: ['image'], default: 'image' },
   proof_url: { type: String },
   proof_public_id: { type: String },
@@ -23,11 +25,11 @@ const PaymentProofSchema = new Schema({
   proof_uploaded_at: { type: Date },
 
   // Request lifecycle:
-  // pending_proof -> pending -> verified/rejected
+  // pending -> verified/rejected (pending_proof deprecated, kept for existing records)
   status: {
     type: String,
     enum: ['pending_proof', 'pending', 'verified', 'rejected'],
-    default: 'pending_proof',
+    default: 'pending',
     index: true,
   },
 

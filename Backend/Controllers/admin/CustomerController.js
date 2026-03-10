@@ -5,6 +5,7 @@ import asyncHandler from 'express-async-handler';
 import CustomerModel from '../../Model/Auth/CustomerModel.js';
 import BrokerModel from '../../Model/Auth/BrokerModel.js';
 import FundModel from '../../Model/FundManagement/FundModel.js';
+import FundTransactionModel from '../../Model/FundManagement/FundTransactionModel.js';
 import OrderModel from '../../Model/Trading/OrdersModel.js';
 
 // Helper: find customer by customer_id string OR mongo _id
@@ -194,6 +195,13 @@ const getCustomerById = asyncHandler(async (req, res) => {
       holdingsExitAllowed: customer.holdings_exit_allowed || false,
       segmentsAllowed: customer.segments_allowed || [],
       settings: customer.settings,
+      // Admin warning state
+      warning: {
+        active: customer.admin_warning_active || false,
+        message: customer.admin_warning_message || '',
+        createdAt: customer.admin_warning_created_at,
+        updatedAt: customer.admin_warning_updated_at,
+      },
       broker: brokerDoc ? {
         id: brokerDoc.broker_id,
         name: brokerDoc.name,
@@ -268,6 +276,7 @@ const blockCustomer = asyncHandler(async (req, res) => {
   customer.status = 'blocked';
   customer.block_reason = reason || 'Blocked by admin';
   customer.blocked_at = new Date();
+  customer.blocked_by = req.user._id; // Admin ID — distinguishes admin blocks from broker blocks
   customer.trading_enabled = false;
   await customer.save();
 
@@ -290,6 +299,7 @@ const unblockCustomer = asyncHandler(async (req, res) => {
   customer.status = 'active';
   customer.block_reason = undefined;
   customer.blocked_at = undefined;
+  customer.blocked_by = undefined; // Clear admin block reference
   await customer.save();
 
   console.log(`[Admin] ${req.user?._id} unblocked customer ${customer.customer_id}`);
@@ -434,6 +444,119 @@ const loginAsCustomer = asyncHandler(async (req, res) => {
   });
 });
 
+/**
+ * @desc     Set admin warning for customer
+ * @route    POST /api/admin/customers/:id/warning
+ * @access   Private (Admin only)
+ */
+const setWarning = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { message } = req.body;
+  const adminId = req.user._id;
+
+  if (!message || typeof message !== 'string' || message.trim().length === 0) {
+    return res.status(400).json({
+      success: false,
+      message: 'Warning message is required.',
+    });
+  }
+
+  const customer = await findCustomer(id, undefined);
+  if (!customer) {
+    return res.status(404).json({ success: false, message: 'Customer not found.' });
+  }
+
+  const isNew = !customer.admin_warning_active;
+
+  customer.admin_warning_active = true;
+  customer.admin_warning_message = message.trim();
+  customer.admin_warning_updated_at = new Date();
+  if (isNew) {
+    customer.admin_warning_created_at = new Date();
+  }
+  customer.admin_warning_created_by = adminId;
+  await customer.save();
+
+  console.log(`[Admin] ${adminId} set warning for customer ${customer.customer_id}: "${message.trim().substring(0, 50)}..."`);
+
+  res.status(200).json({
+    success: true,
+    message: 'Warning set successfully.',
+    warning: {
+      active: true,
+      message: customer.admin_warning_message,
+      createdAt: customer.admin_warning_created_at,
+      updatedAt: customer.admin_warning_updated_at,
+    },
+  });
+});
+
+/**
+ * @desc     Clear admin warning for customer
+ * @route    DELETE /api/admin/customers/:id/warning
+ * @access   Private (Admin only)
+ */
+const clearWarning = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const adminId = req.user._id;
+
+  const customer = await findCustomer(id, undefined);
+  if (!customer) {
+    return res.status(404).json({ success: false, message: 'Customer not found.' });
+  }
+
+  if (!customer.admin_warning_active) {
+    return res.status(400).json({
+      success: false,
+      message: 'No active warning to clear.',
+    });
+  }
+
+  customer.admin_warning_active = false;
+  customer.admin_warning_message = '';
+  customer.admin_warning_updated_at = new Date();
+  await customer.save();
+
+  console.log(`[Admin] ${adminId} cleared warning for customer ${customer.customer_id}`);
+
+  res.status(200).json({
+    success: true,
+    message: 'Warning cleared successfully.',
+  });
+});
+
+/**
+ * @desc     Clear customer statement (delete all fund transactions)
+ * @route    DELETE /api/admin/customers/:id/statement
+ * @access   Private (Admin only)
+ */
+const clearStatement = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const adminId = req.user._id;
+
+  const customer = await findCustomer(id, undefined);
+  if (!customer) {
+    return res.status(404).json({ success: false, message: 'Customer not found.' });
+  }
+
+  const { mongoBrokerId, stringBrokerId } = await resolveCustomerBrokerContext(customer);
+  const customerIdStr = customer.customer_id;
+
+  // Delete all fund transactions for this customer
+  const deleteResult = await FundTransactionModel.deleteMany({
+    customer_id_str: customerIdStr,
+    broker_id_str: stringBrokerId,
+  });
+
+  console.log(`[Admin] ${adminId} cleared statement for customer ${customerIdStr} — deleted ${deleteResult.deletedCount} transactions`);
+
+  res.status(200).json({
+    success: true,
+    message: `Statement cleared successfully. Deleted ${deleteResult.deletedCount} transactions.`,
+    deletedCount: deleteResult.deletedCount,
+  });
+});
+
 export {
   getAllCustomers,
   getCustomerById,
@@ -445,4 +568,7 @@ export {
   toggleHoldingsExit,
   getCustomerCredentials,
   loginAsCustomer,
+  setWarning,
+  clearWarning,
+  clearStatement,
 };

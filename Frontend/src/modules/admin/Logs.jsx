@@ -855,9 +855,9 @@ const Logs = () => {
             <span className="material-symbols-outlined text-[20px] sm:text-[24px]">corporate_fare</span>
             <span className="text-[10px] font-medium">Brokers</span>
           </button>
-          <button onClick={() => navigate('/admin/logs')} className="flex flex-col items-center gap-0.5 sm:gap-1 w-full h-full justify-center text-[#137fec]">
-            <span className="material-symbols-outlined text-[20px] sm:text-[24px]">list_alt</span>
-            <span className="text-[10px] font-medium">Logs</span>
+          <button onClick={() => navigate('/admin/chats')} className="flex flex-col items-center gap-0.5 sm:gap-1 w-full h-full justify-center text-gray-500 hover:text-[#137fec] transition-colors">
+            <span className="material-symbols-outlined text-[20px] sm:text-[24px]">chat</span>
+            <span className="text-[10px] font-medium">Chats</span>
           </button>
           <button onClick={() => navigate('/admin/settings')} className="flex flex-col items-center gap-0.5 sm:gap-1 w-full h-full justify-center text-gray-500 hover:text-[#137fec] transition-colors">
             <span className="material-symbols-outlined text-[20px] sm:text-[24px]">settings</span>

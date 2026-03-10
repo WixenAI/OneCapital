@@ -71,7 +71,7 @@ const customerApi = {
 
   /**
    * Request to add funds
-   * @param {Object} fundData - Amount details
+   * @param {Object} fundData - Amount details (amount, utr_number optional)
    * @returns {Promise}
    */
   requestAddFunds: async (fundData) => {
@@ -80,12 +80,14 @@ const customerApi = {
   },
 
   /**
+   * @deprecated Screenshot proof upload is no longer required
    * Submit payment proof for an add-funds request
    * @param {string} requestId - Add-funds request id
    * @param {Object} proofData - proof_url, proof_public_id, payment_reference
    * @returns {Promise}
    */
   submitAddFundsProof: async (requestId, proofData) => {
+    // DEPRECATED: This endpoint now returns 410 Gone
     const response = await api.post(`/customer/funds/add/${requestId}/proof`, proofData);
     return response.data;
   },
@@ -130,10 +132,12 @@ const customerApi = {
   },
 
   /**
+   * @deprecated Screenshot proof upload is no longer required
    * Get upload signature for funds proof image upload
    * @returns {Promise}
    */
   getFundsUploadSignature: async () => {
+    // DEPRECATED: This endpoint now returns 410 Gone
     const response = await api.get('/customer/funds/upload-signature');
     return response.data;
   },
@@ -528,6 +532,90 @@ const customerApi = {
 
   getKycUploadSignature: async () => {
     const response = await api.get('/customer/kyc-documents/upload-signature');
+    return response.data;
+  },
+
+  /**
+   * Get active admin warning for current customer
+   * @returns {Promise} - { warning: { active, message, createdAt, updatedAt } }
+   */
+  getWarning: async () => {
+    const response = await api.get('/customer/warning');
+    return response.data;
+  },
+
+  // ========================
+  // SUPPORT CHAT
+  // ========================
+
+  /**
+   * Create a new support session or get existing one
+   * @param {string} subject - Session subject (required for new session)
+   * @returns {Promise} - { session, isNew }
+   */
+  createOrGetSupportSession: async (subject) => {
+    const response = await api.post('/customer/support/sessions', { subject });
+    return response.data;
+  },
+
+  /**
+   * Get current active support session
+   * @returns {Promise} - { session } or { session: null }
+   */
+  getCurrentSupportSession: async () => {
+    const response = await api.get('/customer/support/sessions/current');
+    return response.data;
+  },
+
+  /**
+   * Get messages for a support session (cursor-based pagination)
+   * @param {string} sessionId - Session ID
+   * @param {Object} params - { before, after, limit }
+   * @returns {Promise} - { messages, hasMore, cursor }
+   */
+  getSupportMessages: async (sessionId, params = {}) => {
+    const response = await api.get(`/customer/support/sessions/${sessionId}/messages`, { params });
+    return response.data;
+  },
+
+  /**
+   * Send a message in a support session
+   * @param {string} sessionId - Session ID
+   * @param {string} text - Message text
+   * @param {File[]} attachments - Optional file attachments
+   * @returns {Promise} - { message }
+   */
+  sendSupportMessage: async (sessionId, text, attachments = []) => {
+    const formData = new FormData();
+    if (text) formData.append('text', text);
+    for (const file of attachments) {
+      formData.append('attachments', file);
+    }
+    const response = await api.post(`/customer/support/sessions/${sessionId}/messages`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return response.data;
+  },
+
+  /**
+   * Mark messages as read
+   * @param {string} sessionId - Session ID
+   * @param {string[]} messageIds - Optional specific message IDs to mark read
+   * @returns {Promise}
+   */
+  markSupportMessagesRead: async (sessionId, messageIds = []) => {
+    const response = await api.post(`/customer/support/sessions/${sessionId}/read`, { messageIds });
+    return response.data;
+  },
+
+  /**
+   * Send typing status
+   * @param {string} sessionId - Session ID
+   * @param {boolean} isTyping - Whether user is typing
+   * @returns {Promise}
+   */
+  sendSupportTyping: async (sessionId, isTyping) => {
+    const response = await api.post(`/customer/support/sessions/${sessionId}/typing`, { isTyping });
     return response.data;
   },
 };

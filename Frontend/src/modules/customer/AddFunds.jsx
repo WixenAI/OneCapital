@@ -8,6 +8,7 @@ const quickAmounts = [1000, 5000, 10000, 25000, 50000];
 const AddFunds = () => {
   const navigate = useNavigate();
   const [amount, setAmount] = useState('');
+  const [utrNumber, setUtrNumber] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -21,7 +22,10 @@ const AddFunds = () => {
     setError('');
     setLoading(true);
     try {
-      const response = await customerApi.requestAddFunds({ amount: parsedAmount });
+      const response = await customerApi.requestAddFunds({
+        amount: parsedAmount,
+        utr_number: utrNumber.trim() || undefined,
+      });
       navigate('/funds/add/confirm', {
         state: {
           amount: parsedAmount,
@@ -77,9 +81,20 @@ const AddFunds = () => {
             <span className="material-symbols-outlined text-primary">qr_code_2</span>
             <div>
               <p className="text-sm font-semibold text-gray-900 dark:text-[#e8f3ee]">UPI Payment</p>
-              <p className="text-xs text-[#617589]">Proceed to generate request, then upload payment proof.</p>
+              <p className="text-xs text-[#617589]">Proceed to generate request and pay via UPI.</p>
             </div>
           </div>
+        </div>
+
+        <div className="space-y-2">
+          <label className="text-xs font-medium text-gray-500 dark:text-[#9cb7aa]">UTR / Transaction ID (optional)</label>
+          <input
+            type="text"
+            value={utrNumber}
+            onChange={(e) => setUtrNumber(e.target.value)}
+            placeholder="Enter UTR or reference number"
+            className="w-full px-4 py-3 bg-white dark:bg-[#111b17] border border-gray-200 dark:border-[#22352d] rounded-xl text-gray-900 dark:text-[#e8f3ee] text-sm outline-none focus:ring-2 focus:ring-primary"
+          />
         </div>
 
         {error && (

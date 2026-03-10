@@ -361,6 +361,42 @@ export async function createIO(server) {
     socketSubscriptions.set(socket.id, new Map());
     socketFullSubscriptions.set(socket.id, new Map());
 
+    // --- Support Chat Room Setup ---
+    // Auto-join customers to their support room
+    if (socket.data.role === 'customer' && socket.data.customerId) {
+      const customerRoom = `support:customer:${socket.data.customerId}`;
+      socket.join(customerRoom);
+      console.log(`[Support] Customer ${socket.data.customerId} joined room: ${customerRoom}`);
+    }
+    // Auto-join admins to the admin support room
+    if (socket.data.role === 'admin') {
+      socket.join('support:admin');
+      console.log(`[Support] Admin ${socket.id} joined room: support:admin`);
+    }
+
+    // Support typing event handler
+    socket.on('support:typing', (data) => {
+      const { session_id, is_typing } = data;
+      if (!session_id) return;
+      
+      if (socket.data.role === 'customer' && socket.data.customerId) {
+        // Customer typing -> notify admin
+        market.to('support:admin').emit('support:typing', {
+          session_id,
+          is_typing,
+          role: 'customer',
+        });
+      } else if (socket.data.role === 'admin') {
+        // Admin typing -> need to find customer room (handled in controller via req)
+        // This is a fallback if using socket directly
+        market.emit('support:typing', {
+          session_id,
+          is_typing,
+          role: 'admin',
+        });
+      }
+    });
+
     socket.on("subscribe", (list, subscriptionType = 'full') => {
       const tokens = normalizeTokenList(list);
       if (tokens.length === 0) return;

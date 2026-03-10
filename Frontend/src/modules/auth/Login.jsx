@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 
@@ -9,6 +9,13 @@ const Login = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const displayError = error || authError || '';
+
+  useEffect(() => {
+    if (authError && authError !== error) {
+      setError(authError);
+    }
+  }, [authError, error]);
 
   const handleChange = (e) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
@@ -74,10 +81,10 @@ const Login = () => {
         </div>
 
         {/* Error */}
-        {error && (
+        {displayError && (
           <div className="flex items-center gap-2 bg-red-50 text-red-600 px-3 py-2.5 rounded-xl text-sm mb-4 border border-red-100">
             <span className="material-symbols-outlined text-[16px] shrink-0">error</span>
-            <span>{error}</span>
+            <span>{displayError}</span>
           </div>
         )}
 

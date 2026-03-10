@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import brokerApi from '../../api/broker';
 
 const STATUS_META = {
-  pending_proof: { label: 'Awaiting Proof', className: 'bg-amber-50 text-amber-700' },
+  pending_proof: { label: 'Pending', className: 'bg-amber-50 text-amber-700' }, // Legacy status
   pending: { label: 'Pending Review', className: 'bg-blue-50 text-blue-600' },
   verified: { label: 'Approved', className: 'bg-green-50 text-green-600' },
   rejected: { label: 'Rejected', className: 'bg-red-50 text-red-600' },
@@ -43,7 +43,6 @@ const PaymentVerification = () => {
   const [rejectModal, setRejectModal] = useState(null);
   const [rejectReason, setRejectReason] = useState('');
   const [activeFilter, setActiveFilter] = useState('pending');
-  const [proofModal, setProofModal] = useState(null);
 
   const [stats, setStats] = useState({
     totalPending: 0,
@@ -126,37 +125,6 @@ const PaymentVerification = () => {
     } finally {
       setActionLoading(null);
     }
-  };
-
-  const handleDelete = async (id) => {
-    if (!window.confirm('Delete this payment request?')) return;
-
-    setActionLoading(id);
-    try {
-      await brokerApi.deletePayment(id);
-      const request = requests.find(r => (r.id || r._id) === id);
-      setRequests(prev => prev.filter(r => (r.id || r._id) !== id));
-      setStats(prev => ({
-        ...prev,
-        totalPending: prev.totalPending - (request?.amount || 0),
-        pendingCount: Math.max(0, prev.pendingCount - 1)
-      }));
-    } catch (err) {
-      console.error('Failed to delete payment request:', err);
-    } finally {
-      setActionLoading(null);
-    }
-  };
-
-  const handleOpenProof = (request) => {
-    const url = request?.proofUrl || '';
-    if (!url) return;
-    setProofModal({
-      url,
-      customerName: request?.customerName || request?.clientName || request?.name || 'Unknown',
-      customerId: request?.customerId || request?.clientId || request?.client_id || '',
-      amount: request?.amount || 0,
-    });
   };
 
   const formatCurrency = (amount) => {
@@ -258,49 +226,24 @@ const PaymentVerification = () => {
           ) : (
             requests.map(request => {
               const id = request.id || request._id;
-              const status = request.status || (request.proofUrl ? 'pending' : 'pending_proof');
+              const status = request.status || 'pending';
               const statusMeta = STATUS_META[status] || STATUS_META.pending;
-              const isAwaitingProof = status === 'pending_proof';
-              const isPendingReview = status === 'pending';
+              const isPendingReview = status === 'pending' || status === 'pending_proof';
               const canVerify = isPendingView && isPendingReview;
-              const canReject = isPendingView && (isPendingReview || isAwaitingProof);
-              const canDelete = isPendingView && isAwaitingProof;
+              const canReject = isPendingView && isPendingReview;
               const customerName = request.customerName || request.clientName || request.name || 'Unknown';
               const customerId = request.customerId || request.clientId || request.client_id || '';
-              const proofUrl = request.proofUrl || '';
-              const hasProof = Boolean(proofUrl);
               return (
                 <div key={id} className="flex flex-col rounded-xl shadow-sm bg-white overflow-hidden">
-                  {/* Proof Image */}
-                  <div
-                    className={`relative w-full h-36 sm:h-48 bg-gray-100 group ${hasProof ? 'cursor-pointer' : 'cursor-default'}`}
-                    onClick={() => handleOpenProof(request)}
-                  >
-                    {proofUrl ? (
-                      <img src={proofUrl} alt="Payment proof" className="w-full h-full object-cover" />
-                    ) : (
-                      <div className="absolute inset-0 bg-gradient-to-b from-gray-200 to-gray-300 flex items-center justify-center">
-                        <span className="material-symbols-outlined text-gray-400 text-4xl sm:text-5xl">receipt_long</span>
-                      </div>
-                    )}
-                    {hasProof && (
-                      <div className="absolute inset-0 bg-black/20 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                        <div className="bg-white/90 px-3 py-1.5 rounded-full flex items-center gap-2">
-                          <span className="material-symbols-outlined text-[14px]">visibility</span>
-                          <span className="text-[10px] font-bold text-gray-900 uppercase tracking-wider">View Proof</span>
-                        </div>
-                      </div>
-                    )}
-                    {(request.proofType || request.proofSize) && (
-                      <div className="absolute top-2 right-2 bg-white/90 backdrop-blur rounded px-1.5 py-0.5 text-[9px] font-bold text-gray-800 shadow-sm">
-                        {[request.proofType, request.proofSize].filter(Boolean).join(' • ')}
-                      </div>
-                    )}
-                    <div className="absolute top-2 left-2">
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${statusMeta.className}`}>
-                        {statusMeta.label}
-                      </span>
-                    </div>
+                  {/* Request Header with Status */}
+                  <div className="flex items-center justify-between p-3 sm:p-4 border-b border-gray-100">
+                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${statusMeta.className}`}>
+                      {statusMeta.label}
+                    </span>
+                    <p className="text-[#617589] text-[10px] font-medium">
+                      {request.date || (request.createdAt ? new Date(request.createdAt).toLocaleDateString('en-IN') : '')}
+                      {request.time ? ` • ${request.time}` : ''}
+                    </p>
                   </div>
 
                   {/* Request Details */}
@@ -312,16 +255,19 @@ const PaymentVerification = () => {
                           {customerName} {customerId ? `• ${customerId}` : ''}
                         </p>
                       </div>
-                      <p className="text-[#617589] text-[10px] font-medium text-right">
-                        {request.date || (request.createdAt ? new Date(request.createdAt).toLocaleDateString('en-IN') : '')}
-                        {request.time ? ` • ${request.time}` : ''}
-                      </p>
                     </div>
 
                     {request.utrNumber && (
+                      <div className="bg-blue-50 rounded-lg px-2.5 py-1.5 flex items-center gap-2">
+                        <span className="text-[10px] text-blue-600 font-medium">UTR:</span>
+                        <span className="text-[11px] font-semibold font-mono text-blue-800">{request.utrNumber}</span>
+                      </div>
+                    )}
+
+                    {request.paymentReference && !request.utrNumber && (
                       <div className="bg-gray-50 rounded-lg px-2.5 py-1.5 flex items-center gap-2">
-                        <span className="text-[10px] text-[#617589]">UTR:</span>
-                        <span className="text-[10px] font-semibold font-mono">{request.utrNumber}</span>
+                        <span className="text-[10px] text-[#617589]">Ref:</span>
+                        <span className="text-[10px] font-semibold font-mono">{request.paymentReference}</span>
                       </div>
                     )}
 
@@ -352,19 +298,6 @@ const PaymentVerification = () => {
                         >
                           Reject
                         </button>
-                        {canDelete ? (
-                          <button
-                            onClick={() => handleDelete(id)}
-                            disabled={actionLoading === id}
-                            className="flex-1 flex items-center justify-center rounded-lg h-10 bg-gray-200 text-[#111418] text-xs font-bold active:scale-95 transition-transform"
-                          >
-                            {actionLoading === id ? 'Deleting...' : 'Delete'}
-                          </button>
-                        ) : (
-                          <div className="flex-1 h-10 rounded-lg bg-amber-50 border border-amber-100 text-amber-700 text-[11px] flex items-center justify-center px-2 text-center">
-                            Proof submitted
-                          </div>
-                        )}
                       </div>
                     ) : (
                       <div className="bg-green-50 border border-green-100 rounded-lg p-2.5">
@@ -380,32 +313,6 @@ const PaymentVerification = () => {
           )}
         </div>
       </div>
-
-      {/* Proof Modal */}
-      {proofModal && (
-        <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4" onClick={() => setProofModal(null)}>
-          <div className="bg-white rounded-2xl w-full max-w-2xl shadow-xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200">
-              <div>
-                <h3 className="text-[#111418] text-base sm:text-lg font-bold">Payment Proof</h3>
-                <p className="text-[#617589] text-[11px] sm:text-xs">
-                  {proofModal.customerName}{proofModal.customerId ? ` • ${proofModal.customerId}` : ''} • {formatCurrency(proofModal.amount)}
-                </p>
-              </div>
-              <button onClick={() => setProofModal(null)} className="flex size-9 items-center justify-center rounded-full hover:bg-gray-100">
-                <span className="material-symbols-outlined text-[22px]">close</span>
-              </button>
-            </div>
-            <div className="bg-black">
-              <img
-                src={proofModal.url}
-                alt="Payment proof full view"
-                className="w-full max-h-[80vh] object-contain"
-              />
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Reject Modal */}
       {rejectModal && (

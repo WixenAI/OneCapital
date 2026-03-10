@@ -10,6 +10,7 @@ import {
   updateNotifications,
   uploadProfilePhoto,
   getProfilePhotoUploadSignature,
+  getWarning,
 } from '../../Controllers/customer/SettingsController.js';
 
 const router = express.Router();
@@ -58,5 +59,12 @@ router.put('/profile/photo', uploadProfilePhoto);
  * @access  Private (Customer only)
  */
 router.get('/profile/photo-upload-signature', getProfilePhotoUploadSignature);
+
+/**
+ * @route   GET /api/customer/warning
+ * @desc    Get active admin warning for current customer
+ * @access  Private (Customer only)
+ */
+router.get('/warning', getWarning);
 
 export default router;

@@ -8,6 +8,8 @@ import customerRoute from './customerRoute.js';
 import kycRoute from './kycRoute.js';
 import logsRoute from './logsRoute.js';
 import apiKeyRoute from './apiKeyRoute.js';
+import supportRoutes from './supportRoutes.js';
+import kiteRoute from './kiteRoute.js';
 
 const router = express.Router();
 
@@ -18,5 +20,7 @@ router.use('/', customerRoute);
 router.use('/', kycRoute);
 router.use('/', logsRoute);
 router.use('/', apiKeyRoute);
+router.use('/', supportRoutes);
+router.use('/', kiteRoute);
 
 export default router;

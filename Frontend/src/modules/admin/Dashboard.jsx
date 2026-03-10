@@ -24,12 +24,6 @@ const Dashboard = () => {
     aumChange: '+0%'
   });
 
-  const [actionItems, setActionItems] = useState({
-    pendingKYC: 0,
-    pendingWithdrawals: 0,
-    withdrawalAmount: '₹0L'
-  });
-
   const [recentActivity, setRecentActivity] = useState([]);
 
   // Fetch dashboard data
@@ -52,12 +46,6 @@ const Dashboard = () => {
           totalAUM: `₹ ${totalAum ? (totalAum / 10000000).toFixed(2) : '0'} Cr`,
           aumChange: '+0%'
         });
-
-        setActionItems({
-          pendingKYC: data.kyc?.pending || 0,
-          pendingWithdrawals: 0,
-          withdrawalAmount: '₹0L'
-        });
       }
     } catch (err) {
       console.error('Failed to fetch dashboard data:', err);
@@ -73,7 +61,7 @@ const Dashboard = () => {
 
   const quickActions = [
     { icon: 'manage_accounts', label: 'User\nMgmt', path: '/admin/customers' },
-    { icon: 'monitoring', label: 'Fund\nOversight', path: '/admin/funds' },
+    { icon: 'chat', label: 'Support\nChats', path: '/admin/chats' },
     { icon: 'assessment', label: 'Reports', path: '/admin/reports' },
     { icon: 'settings_applications', label: 'System', path: '/admin/settings' }
   ];
@@ -161,65 +149,6 @@ const Dashboard = () => {
           </div>
         </section>
 
-        {/* Action Required Section */}
-        <section>
-          <div className="flex items-center justify-between mb-2.5 sm:mb-3 px-1">
-            <h3 className="text-base sm:text-lg font-bold leading-tight">Action Required</h3>
-            <button className="text-[#137fec] text-xs sm:text-sm font-medium">View All</button>
-          </div>
-          <div className="flex overflow-x-auto no-scrollbar gap-3 sm:gap-4 pb-2 -mx-3 sm:-mx-4 px-3 sm:px-4 snap-x">
-            {/* KYC Card */}
-            <div 
-              onClick={() => navigate('/admin/kyc')}
-              className="snap-center shrink-0 w-[85%] max-w-[300px] flex flex-col rounded-xl bg-white shadow-sm border border-gray-100 overflow-hidden cursor-pointer"
-            >
-              <div className="h-24 sm:h-32 w-full bg-gradient-to-br from-blue-100 to-blue-50 relative flex items-center justify-center">
-                <span className="material-symbols-outlined text-[#137fec] text-4xl sm:text-5xl opacity-30">verified_user</span>
-                <div className="absolute top-2 sm:top-3 right-2 sm:right-3 bg-white px-2 py-0.5 sm:py-1 rounded text-[10px] sm:text-xs font-bold text-red-600 shadow-sm">High Priority</div>
-              </div>
-              <div className="p-3 sm:p-4 flex flex-col gap-2.5 sm:gap-3">
-                <div className="flex justify-between items-start">
-                  <div>
-                    <h4 className="text-sm sm:text-base font-bold">Pending KYC</h4>
-                    <p className="text-xs sm:text-sm text-gray-500 mt-0.5 sm:mt-1">{actionItems.pendingKYC} requests to review</p>
-                  </div>
-                  <div className="bg-red-50 p-1.5 sm:p-2 rounded-full text-red-600">
-                    <span className="material-symbols-outlined text-lg sm:text-xl">person_alert</span>
-                  </div>
-                </div>
-                <button className="w-full flex items-center justify-center rounded-lg h-9 sm:h-10 px-4 bg-[#137fec] text-white text-xs sm:text-sm font-bold shadow hover:bg-blue-600 transition-colors">
-                  Review Requests
-                </button>
-              </div>
-            </div>
-
-            {/* Withdrawals Card */}
-            <div 
-              onClick={() => navigate('/admin/withdrawals')}
-              className="snap-center shrink-0 w-[85%] max-w-[300px] flex flex-col rounded-xl bg-white shadow-sm border border-gray-100 overflow-hidden cursor-pointer"
-            >
-              <div className="h-24 sm:h-32 w-full bg-gradient-to-br from-orange-100 to-orange-50 relative flex items-center justify-center">
-                <span className="material-symbols-outlined text-orange-500 text-4xl sm:text-5xl opacity-30">payments</span>
-                <div className="absolute top-2 sm:top-3 right-2 sm:right-3 bg-white px-2 py-0.5 sm:py-1 rounded text-[10px] sm:text-xs font-bold text-orange-600 shadow-sm">Urgent</div>
-              </div>
-              <div className="p-3 sm:p-4 flex flex-col gap-2.5 sm:gap-3">
-                <div className="flex justify-between items-start">
-                  <div>
-                    <h4 className="text-sm sm:text-base font-bold">Pending Withdrawals</h4>
-                    <p className="text-xs sm:text-sm text-gray-500 mt-0.5 sm:mt-1">{actionItems.pendingWithdrawals} requests totaling <span className="font-semibold text-gray-800">{actionItems.withdrawalAmount}</span></p>
-                  </div>
-                  <div className="bg-orange-50 p-1.5 sm:p-2 rounded-full text-orange-600">
-                    <span className="material-symbols-outlined text-lg sm:text-xl">payments</span>
-                  </div>
-                </div>
-                <button className="w-full flex items-center justify-center rounded-lg h-9 sm:h-10 px-4 bg-white border border-gray-200 text-gray-800 text-xs sm:text-sm font-bold shadow-sm hover:bg-gray-50 transition-colors">
-                  Process Payouts
-                </button>
-              </div>
-            </div>
-          </div>
-        </section>
-
         {/* Quick Actions */}
         <section>
           <h3 className="text-base sm:text-lg font-bold leading-tight mb-3 sm:mb-4 px-1">Quick Actions</h3>
@@ -285,11 +214,11 @@ const Dashboard = () => {
             <span className="text-[10px] font-medium">Brokers</span>
           </button>
           <button 
-            onClick={() => navigate('/admin/logs')}
+            onClick={() => navigate('/admin/chats')}
             className="flex flex-col items-center gap-0.5 sm:gap-1 w-full h-full justify-center text-gray-500 hover:text-[#137fec] transition-colors"
           >
-            <span className="material-symbols-outlined text-[20px] sm:text-[24px]">list_alt</span>
-            <span className="text-[10px] font-medium">Logs</span>
+            <span className="material-symbols-outlined text-[20px] sm:text-[24px]">chat</span>
+            <span className="text-[10px] font-medium">Chats</span>
           </button>
           <button 
             onClick={() => navigate('/admin/settings')}

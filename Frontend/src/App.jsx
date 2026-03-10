@@ -13,6 +13,7 @@ import { useTheme } from './context/useTheme';
 import CustomerLayout from './layouts/CustomerLayout';
 import BrokerLayout from './layouts/BrokerLayout';
 import CFDRiskWarningModal from './components/shared/CFDRiskWarningModal';
+import { AdminWarningGate } from './components/shared/WarningBanner';
 
 // Auth (small, always needed)
 const Login = lazy(() => import('./modules/auth/Login'));
@@ -37,6 +38,7 @@ const AccountSettings = lazy(() => import('./modules/customer/AccountSettings'))
 const AddBankAccount = lazy(() => import('./modules/customer/AddBankAccount'));
 const AccountSummary = lazy(() => import('./modules/customer/AccountSummary'));
 const Help = lazy(() => import('./modules/customer/Help'));
+const SupportChat = lazy(() => import('./modules/customer/SupportChat'));
 const KycDetails = lazy(() => import('./modules/customer/KycDetails'));
 const KYCDocuments = lazy(() => import('./modules/customer/KYCDocuments'));
 const KYCPending = lazy(() => import('./modules/customer/KYCPending'));
@@ -74,6 +76,7 @@ const AdminSettings = lazy(() => import('./modules/admin/Settings'));
 const AdminReports = lazy(() => import('./modules/admin/Reports'));
 const AdminWithdrawals = lazy(() => import('./modules/admin/Withdrawals'));
 const AdminFunds = lazy(() => import('./modules/admin/Funds'));
+const AdminChats = lazy(() => import('./modules/admin/Chats'));
 
 const CUSTOMER_CFD_WARNING_REQUIRED_KEY = 'customer_cfd_warning_required';
 const CUSTOMER_REENTRY_REDIRECT_DONE_KEY = 'customer_reentry_redirect_done';
@@ -142,6 +145,7 @@ const RequireCustomerAuth = ({ children }) => {
     <>
       {children}
       <CustomerCfdRiskWarningGate />
+      <AdminWarningGate />
     </>
   ) : <Navigate to="/login" replace />;
 };
@@ -300,6 +304,7 @@ function App() {
                 <Route path="/profile/bank-account/edit/:id" element={<RequireCustomerAuth><AddBankAccount /></RequireCustomerAuth>} />
                 <Route path="/account-summary" element={<RequireCustomerAuth><AccountSummary /></RequireCustomerAuth>} />
                 <Route path="/support" element={<RequireCustomerAuth><Help /></RequireCustomerAuth>} />
+                <Route path="/support/chat" element={<RequireCustomerAuth><SupportChat /></RequireCustomerAuth>} />
                 <Route path="/kyc" element={<RequireCustomerAuth><KycDetails /></RequireCustomerAuth>} />
                 <Route path="/kyc-documents" element={<RequireCustomerAuth><KYCDocuments /></RequireCustomerAuth>} />
                 <Route path="/order-confirmation" element={<RequireCustomerAuth><OrderConfirmation /></RequireCustomerAuth>} />
@@ -342,6 +347,8 @@ function App() {
                 <Route path="/admin/reports" element={<RequireAdminAuth><AdminReports /></RequireAdminAuth>} />
                 <Route path="/admin/withdrawals" element={<RequireAdminAuth><AdminWithdrawals /></RequireAdminAuth>} />
                 <Route path="/admin/funds" element={<RequireAdminAuth><AdminFunds /></RequireAdminAuth>} />
+                <Route path="/admin/chats" element={<RequireAdminAuth><AdminChats /></RequireAdminAuth>} />
+                <Route path="/admin/chats/:sessionId" element={<RequireAdminAuth><AdminChats /></RequireAdminAuth>} />
                 <Route path="*" element={<Navigate to="/" replace />} />
                 </Routes>
                 </Suspense>

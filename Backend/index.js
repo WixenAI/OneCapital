@@ -44,6 +44,9 @@ const server = http.createServer(app);
 // createIO now returns { io, market } (market = namespace)
 const { io, market } = await createIO(server);
 
+// Attach socket.io namespace to express app for controllers to emit events
+app.set('io', market);
+
 // --- Market feed (Kite WebSocket) ---
 export let lmf = null;
 if (ENABLE_WS_FEED) {

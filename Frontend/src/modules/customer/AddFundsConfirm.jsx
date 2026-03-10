@@ -64,7 +64,7 @@ const AddFundsConfirm = () => {
           {request.id && (
             <p className="text-[11px] text-[#617589] dark:text-[#9cb7aa] mt-2">Request ID: <span className="font-mono">{request.id}</span></p>
           )}
-          <p className="text-[11px] text-[#617589] dark:text-[#9cb7aa] mt-1">Status: {request.status || 'pending_proof'}</p>
+          <p className="text-[11px] text-[#617589] dark:text-[#9cb7aa] mt-1">Status: {request.status || 'pending'}</p>
         </div>
 
         <div className="bg-white dark:bg-[#111b17] rounded-xl border border-gray-200 dark:border-[#22352d] p-4 shadow-sm">
@@ -104,17 +104,17 @@ const AddFundsConfirm = () => {
           )}
         </div>
 
-        <div className="bg-blue-50 dark:bg-emerald-500/10 border border-blue-100 dark:border-[#22352d] rounded-xl p-3">
-          <p className="text-[12px] text-blue-700 dark:text-[#9cb7aa]">
-            After payment, upload proof in Profile &gt; Payments so broker can verify it.
+        <div className="bg-green-50 dark:bg-emerald-500/10 border border-green-100 dark:border-[#22352d] rounded-xl p-3">
+          <p className="text-[12px] text-green-700 dark:text-[#9cb7aa]">
+            Your request has been submitted for verification. Your broker will review and approve it shortly.
           </p>
         </div>
 
         <button
-          onClick={() => navigate('/profile/payments', { state: { requestId: request.id } })}
+          onClick={() => navigate('/profile/payments')}
           className="w-full bg-[#137fec] text-white font-bold py-3.5 rounded-xl shadow-sm"
         >
-          Go to Payments
+          View Payment Status
         </button>
       </div>
     </div>

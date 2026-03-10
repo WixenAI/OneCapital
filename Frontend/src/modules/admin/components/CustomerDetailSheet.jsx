@@ -12,6 +12,10 @@ const CustomerDetailSheet = ({ customerId, onClose }) => {
   const [credentials, setCredentials] = useState(null);
   const [showCredentials, setShowCredentials] = useState(false);
   const [credLoading, setCredLoading] = useState(false);
+  const [warningMessage, setWarningMessage] = useState('');
+  const [showWarningEditor, setShowWarningEditor] = useState(false);
+  const [showClearStatementConfirm, setShowClearStatementConfirm] = useState(false);
+  const [clearStatementResult, setClearStatementResult] = useState(null);
 
   const fetchCustomer = useCallback(async () => {
     setLoading(true);
@@ -29,6 +33,60 @@ const CustomerDetailSheet = ({ customerId, onClose }) => {
   useEffect(() => {
     if (customerId) fetchCustomer();
   }, [fetchCustomer]);
+
+  // Initialize warning message when customer loads
+  useEffect(() => {
+    if (customer?.warning?.message) {
+      setWarningMessage(customer.warning.message);
+    }
+  }, [customer?.warning?.message]);
+
+  const handleSetWarning = async () => {
+    if (!warningMessage.trim()) return;
+    setActionLoading(true);
+    try {
+      await adminApi.setCustomerWarning(customer._id, warningMessage.trim());
+      setCustomer(prev => ({
+        ...prev,
+        warning: { ...prev.warning, active: true, message: warningMessage.trim(), updatedAt: new Date().toISOString() }
+      }));
+      setShowWarningEditor(false);
+    } catch (err) {
+      setError(err.message || 'Failed to set warning');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleClearWarning = async () => {
+    setActionLoading(true);
+    try {
+      await adminApi.clearCustomerWarning(customer._id);
+      setCustomer(prev => ({
+        ...prev,
+        warning: { active: false, message: '', createdAt: null, updatedAt: null }
+      }));
+      setWarningMessage('');
+      setShowWarningEditor(false);
+    } catch (err) {
+      setError(err.message || 'Failed to clear warning');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleClearStatement = async () => {
+    setActionLoading(true);
+    try {
+      const result = await adminApi.clearCustomerStatement(customer._id);
+      setClearStatementResult(result);
+      setShowClearStatementConfirm(false);
+    } catch (err) {
+      setError(err.message || 'Failed to clear statement');
+    } finally {
+      setActionLoading(false);
+    }
+  };
 
   const handleBlock = async () => {
     setActionLoading(true);
@@ -280,6 +338,77 @@ const CustomerDetailSheet = ({ customerId, onClose }) => {
                     </label>
                   </div>
                 </div>
+
+                {/* Admin Warning */}
+                <div className={`flex flex-col bg-white p-3 rounded-xl ${actionLoading ? 'opacity-60 pointer-events-none' : ''}`}>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div className={`p-2 rounded-full ${customer.warning?.active ? 'bg-amber-50 text-amber-600' : 'bg-gray-100 text-gray-400'}`}>
+                        <span className="material-symbols-outlined text-[18px]">warning</span>
+                      </div>
+                      <div>
+                        <p className="text-xs font-bold">Admin Warning</p>
+                        <p className="text-[10px] text-gray-500">
+                          {customer.warning?.active ? 'Warning active' : 'No active warning'}
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => setShowWarningEditor(!showWarningEditor)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${customer.warning?.active ? 'bg-amber-100 text-amber-700' : 'bg-blue-100 text-blue-700'}`}
+                    >
+                      {customer.warning?.active ? 'Edit' : 'Set Warning'}
+                    </button>
+                  </div>
+                  
+                  {/* Warning Message Display */}
+                  {customer.warning?.active && !showWarningEditor && (
+                    <div className="mt-3 bg-amber-50 border border-amber-200 rounded-lg p-2.5">
+                      <p className="text-[11px] text-amber-800">{customer.warning.message}</p>
+                      {customer.warning.updatedAt && (
+                        <p className="text-[10px] text-amber-600 mt-1">
+                          Updated: {new Date(customer.warning.updatedAt).toLocaleString('en-IN')}
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Warning Editor */}
+                  {showWarningEditor && (
+                    <div className="mt-3 space-y-2">
+                      <textarea
+                        value={warningMessage}
+                        onChange={(e) => setWarningMessage(e.target.value)}
+                        placeholder="Enter warning message for customer..."
+                        rows={3}
+                        className="w-full rounded-lg border border-gray-200 px-3 py-2 text-xs resize-none focus:outline-none focus:border-blue-400"
+                      />
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => { setShowWarningEditor(false); setWarningMessage(customer.warning?.message || ''); }}
+                          className="flex-1 h-8 rounded-lg bg-gray-100 text-gray-600 text-xs font-semibold"
+                        >
+                          Cancel
+                        </button>
+                        {customer.warning?.active && (
+                          <button
+                            onClick={handleClearWarning}
+                            className="flex-1 h-8 rounded-lg bg-gray-200 text-gray-700 text-xs font-semibold"
+                          >
+                            Clear Warning
+                          </button>
+                        )}
+                        <button
+                          onClick={handleSetWarning}
+                          disabled={!warningMessage.trim()}
+                          className="flex-1 h-8 rounded-lg bg-amber-500 text-white text-xs font-semibold disabled:opacity-50"
+                        >
+                          {customer.warning?.active ? 'Update' : 'Set Warning'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
 
               {/* Credentials */}
@@ -317,6 +446,67 @@ const CustomerDetailSheet = ({ customerId, onClose }) => {
                       <span className="text-gray-400">Password</span>
                       <span className="font-semibold font-mono">{credentials.password}</span>
                     </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Clear Statement */}
+              <div className="bg-gray-50 rounded-xl p-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <div className="p-2 rounded-full bg-red-50 text-red-500">
+                      <span className="material-symbols-outlined text-[18px]">delete_sweep</span>
+                    </div>
+                    <div>
+                      <p className="text-xs font-bold">Clear Statement</p>
+                      <p className="text-[10px] text-gray-500">Delete all fund transactions</p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setShowClearStatementConfirm(true)}
+                    disabled={actionLoading}
+                    className="px-3 py-1.5 rounded-lg bg-red-100 text-red-600 text-[10px] font-bold hover:bg-red-200 transition-colors disabled:opacity-50"
+                  >
+                    Clear
+                  </button>
+                </div>
+
+                {/* Clear Statement Confirmation */}
+                {showClearStatementConfirm && (
+                  <div className="mt-3 p-3 rounded-lg bg-red-50 border border-red-200">
+                    <p className="text-xs text-red-600 font-medium mb-2">
+                      Are you sure? This will permanently delete all fund transaction history for this customer.
+                    </p>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => setShowClearStatementConfirm(false)}
+                        className="flex-1 h-8 rounded-lg bg-white text-gray-600 text-xs font-semibold border border-gray-200"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={handleClearStatement}
+                        disabled={actionLoading}
+                        className="flex-1 h-8 rounded-lg bg-red-500 text-white text-xs font-semibold disabled:opacity-50"
+                      >
+                        {actionLoading ? 'Clearing...' : 'Confirm Clear'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Clear Statement Result */}
+                {clearStatementResult && (
+                  <div className="mt-3 p-3 rounded-lg bg-green-50 border border-green-200">
+                    <p className="text-xs text-green-700 font-medium">
+                      {clearStatementResult.message}
+                    </p>
+                    <button
+                      onClick={() => setClearStatementResult(null)}
+                      className="mt-2 text-[10px] text-green-600 font-semibold underline"
+                    >
+                      Dismiss
+                    </button>
                   </div>
                 )}
               </div>

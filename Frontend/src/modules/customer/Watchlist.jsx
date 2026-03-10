@@ -5,6 +5,7 @@ import { useMarketData } from '../../context/SocketContext';
 import { useAuth } from '../../context/AuthContext';
 import OrderBottomSheet from './OrderBottomSheet';
 import useCustomerTradingGate from '../../hooks/useCustomerTradingGate';
+import { InlineWarningBanner } from '../../components/shared/WarningBanner';
 
 const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 
@@ -1756,6 +1757,9 @@ const Watchlist = () => {
           )}
         </div>
       )}
+
+      {/* Admin Warning Banner (inline) */}
+      {!showSearchPanel && <InlineWarningBanner />}
 
       {/* Watchlist Tabs */}
       {!showSearchPanel && (

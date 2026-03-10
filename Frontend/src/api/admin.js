@@ -121,6 +121,37 @@ const adminApi = {
     return response.data;
   },
 
+  /**
+   * Set admin warning for customer
+   * @param {string} customerId - Customer ID
+   * @param {string} message - Warning message
+   * @returns {Promise}
+   */
+  setCustomerWarning: async (customerId, message) => {
+    const response = await api.post(`/admin/customers/${customerId}/warning`, { message });
+    return response.data;
+  },
+
+  /**
+   * Clear admin warning for customer
+   * @param {string} customerId - Customer ID
+   * @returns {Promise}
+   */
+  clearCustomerWarning: async (customerId) => {
+    const response = await api.delete(`/admin/customers/${customerId}/warning`);
+    return response.data;
+  },
+
+  /**
+   * Clear customer statement (delete all fund transactions)
+   * @param {string} customerId - Customer ID
+   * @returns {Promise}
+   */
+  clearCustomerStatement: async (customerId) => {
+    const response = await api.delete(`/admin/customers/${customerId}/statement`);
+    return response.data;
+  },
+
   updateReferenceCode: async (brokerId, referenceCode) => {
     const response = await api.put(`/admin/brokers/${brokerId}/reference-code`, { referenceCode });
     return response.data;
@@ -319,6 +350,11 @@ const adminApi = {
     return response.data;
   },
 
+  generateKiteTOTP: async () => {
+    const response = await api.post('/admin/kite/totp/generate');
+    return response.data;
+  },
+
   // ========================
   // KYC STATS
   // ========================
@@ -344,6 +380,112 @@ const adminApi = {
 
   getActivity: async (params = {}) => {
     const response = await api.get('/admin/activity', { params });
+    return response.data;
+  },
+
+  // ========================
+  // SUPPORT CHAT
+  // ========================
+
+  /**
+   * Get all support sessions with filtering and pagination
+   * @param {Object} params - { status, brokerId, search, hasUnread, page, limit, sortBy, sortOrder }
+   * @returns {Promise} - { sessions, pagination, totalUnread }
+   */
+  getSupportSessions: async (params = {}) => {
+    const response = await api.get('/admin/support/sessions', { params });
+    return response.data;
+  },
+
+  /**
+   * Get total unread count across all sessions
+   * @returns {Promise} - { unreadCount }
+   */
+  getSupportUnreadCount: async () => {
+    const response = await api.get('/admin/support/unread-count');
+    return response.data;
+  },
+
+  /**
+   * Get a specific support session
+   * @param {string} sessionId - Session ID
+   * @returns {Promise} - { session }
+   */
+  getSupportSession: async (sessionId) => {
+    const response = await api.get(`/admin/support/sessions/${sessionId}`);
+    return response.data;
+  },
+
+  /**
+   * Get messages for a support session (cursor-based pagination)
+   * @param {string} sessionId - Session ID
+   * @param {Object} params - { before, after, limit }
+   * @returns {Promise} - { messages, hasMore, cursor }
+   */
+  getSupportMessages: async (sessionId, params = {}) => {
+    const response = await api.get(`/admin/support/sessions/${sessionId}/messages`, { params });
+    return response.data;
+  },
+
+  /**
+   * Send a message in a support session
+   * @param {string} sessionId - Session ID
+   * @param {string} text - Message text
+   * @param {File[]} attachments - Optional file attachments
+   * @returns {Promise} - { message }
+   */
+  sendSupportMessage: async (sessionId, text, attachments = []) => {
+    const formData = new FormData();
+    if (text) formData.append('text', text);
+    for (const file of attachments) {
+      formData.append('attachments', file);
+    }
+    const response = await api.post(`/admin/support/sessions/${sessionId}/messages`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return response.data;
+  },
+
+  /**
+   * Mark messages as read
+   * @param {string} sessionId - Session ID
+   * @param {string[]} messageIds - Optional specific message IDs to mark read
+   * @returns {Promise}
+   */
+  markSupportMessagesRead: async (sessionId, messageIds = []) => {
+    const response = await api.post(`/admin/support/sessions/${sessionId}/read`, { messageIds });
+    return response.data;
+  },
+
+  /**
+   * Resolve and delete a support session
+   * @param {string} sessionId - Session ID
+   * @returns {Promise}
+   */
+  resolveSupportSession: async (sessionId) => {
+    const response = await api.post(`/admin/support/sessions/${sessionId}/resolve`);
+    return response.data;
+  },
+
+  /**
+   * Close and delete a support session (without resolution)
+   * @param {string} sessionId - Session ID
+   * @param {string} reason - Optional closure reason
+   * @returns {Promise}
+   */
+  closeSupportSession: async (sessionId, reason) => {
+    const response = await api.post(`/admin/support/sessions/${sessionId}/close`, { reason });
+    return response.data;
+  },
+
+  /**
+   * Send typing status
+   * @param {string} sessionId - Session ID
+   * @param {boolean} isTyping - Whether admin is typing
+   * @returns {Promise}
+   */
+  sendSupportTyping: async (sessionId, isTyping) => {
+    const response = await api.post(`/admin/support/sessions/${sessionId}/typing`, { isTyping });
     return response.data;
   },
 };

@@ -12,6 +12,7 @@ import settingsRoutes from './settingsRoutes.js';
 import bankAccountRoutes from './bankAccountRoutes.js';
 import kycDocumentRoutes from './kycDocumentRoutes.js';
 import registrationRoutes from './registrationRoutes.js';
+import supportRoutes from './supportRoutes.js';
 
 const router = express.Router();
 
@@ -42,5 +43,8 @@ router.use('/', bankAccountRoutes);
 
 // KYC Documents
 router.use('/', kycDocumentRoutes);
+
+// Support Chat
+router.use('/', supportRoutes);
 
 export default router;

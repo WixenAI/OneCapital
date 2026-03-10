@@ -10,6 +10,7 @@ import {
   normalizeUiTransaction,
 } from '../../utils/transactionFormatters';
 import { readSessionCache, writeSessionCache, clearSessionCache } from '../../utils/sessionCache';
+import { FundsWarningBanner } from '../../components/shared/WarningBanner';
 
 const FUNDS_CACHE_KEY = 'funds_tab_v1';
 const FUNDS_CACHE_TTL_MS = 30 * 1000;
@@ -346,6 +347,9 @@ const Funds = () => {
           </p>
         </div>
       </div>
+
+      {/* Admin Warning Banner */}
+      <FundsWarningBanner />
 
       {/* Details Grid */}
       <div className="px-3 sm:px-4 mt-6">

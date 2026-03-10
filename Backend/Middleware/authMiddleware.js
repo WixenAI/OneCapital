@@ -5,6 +5,24 @@ import BrokerModel from '../Model/Auth/BrokerModel.js';
 import CustomerModel from '../Model/Auth/CustomerModel.js';
 import { isBlacklisted } from '../Controllers/common/AuthController.js';
 
+const buildSessionExpiredPayload = () => ({
+  success: false,
+  code: 'SESSION_EXPIRED',
+  message: 'Session expired. Please login again.',
+});
+
+const buildSuspendedPayload = () => ({
+  success: false,
+  code: 'ACCOUNT_SUSPENDED',
+  message: 'Account suspended.',
+});
+
+const buildInactivePayload = () => ({
+  success: false,
+  code: 'ACCOUNT_INACTIVE',
+  message: 'Account inactive. Please contact your broker.',
+});
+
 // protect middleware: verifies bearer token, checks blacklist, loads user
 const protect = asyncHandler(async (req, res, next) => {
   const auth = req.headers.authorization || '';
@@ -12,7 +30,9 @@ const protect = asyncHandler(async (req, res, next) => {
   if (!token) return res.status(401).json({ message: 'Not authorized' });
 
   if (typeof isBlacklisted === 'function') {
-    if (await isBlacklisted(token)) return res.status(401).json({ message: 'Session expired. Please login again.' });
+    if (await isBlacklisted(token)) {
+      return res.status(401).json(buildSessionExpiredPayload());
+    }
   }
 
   try {
@@ -60,6 +80,19 @@ const protect = asyncHandler(async (req, res, next) => {
         req.user.isImpersonation = true;
         req.user.impersonatorRole = decoded.impersonatorRole;
         req.user.impersonatedBy = decoded.impersonatedBy;
+      }
+
+      const isAdminImpersonation =
+        decoded.isImpersonation && decoded.impersonatorRole === 'admin';
+
+      if (!isAdminImpersonation) {
+        if (req.user.status === 'blocked') {
+          return res.status(403).json(buildSuspendedPayload());
+        }
+
+        if (req.user.status === 'inactive') {
+          return res.status(403).json(buildInactivePayload());
+        }
       }
     }
 

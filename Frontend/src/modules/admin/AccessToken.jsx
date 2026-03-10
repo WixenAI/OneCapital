@@ -8,6 +8,10 @@ const AccessToken = () => {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [manualLoginLoading, setManualLoginLoading] = useState(false);
+  const [totpLoading, setTotpLoading] = useState(false);
+  const [totpData, setTotpData] = useState(null);
+  const [totpSecondsRemaining, setTotpSecondsRemaining] = useState(0);
+  const [totpStatusMessage, setTotpStatusMessage] = useState(null);
   const [error, setError] = useState(null);
 
   const fetchTokenStatus = useCallback(async () => {
@@ -27,6 +31,24 @@ const AccessToken = () => {
   useEffect(() => {
     fetchTokenStatus();
   }, [fetchTokenStatus]);
+
+  useEffect(() => {
+    if (!totpData?.expiresAt) {
+      setTotpSecondsRemaining(0);
+      return undefined;
+    }
+
+    const updateRemaining = () => {
+      const expiresAt = new Date(totpData.expiresAt).getTime();
+      const remaining = Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000));
+      setTotpSecondsRemaining(remaining);
+    };
+
+    updateRemaining();
+    const intervalId = window.setInterval(updateRemaining, 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, [totpData?.expiresAt]);
 
   const handleRefreshToken = async () => {
     setRefreshing(true);
@@ -64,6 +86,35 @@ const AccessToken = () => {
     }
   };
 
+  const handleGenerateTOTP = async () => {
+    setTotpLoading(true);
+    setError(null);
+    setTotpStatusMessage(null);
+    try {
+      const data = await adminApi.generateKiteTOTP();
+      if (data.success && data.otp) {
+        setTotpData({
+          otp: data.otp,
+          userId: data.user_id || 'N/A',
+          generatedAt: data.generated_at,
+          expiresAt: data.expires_at,
+        });
+        setTotpStatusMessage('TOTP generated from the active Kite credential. Secret stays on the server.');
+      } else {
+        setTotpData(null);
+        setTotpStatusMessage(data.error || 'TOTP generation failed.');
+        setError(data.error || 'TOTP generation failed.');
+      }
+    } catch (err) {
+      console.error('[AccessToken] TOTP generation error:', err);
+      setTotpData(null);
+      setTotpStatusMessage(err.message || 'Unable to generate TOTP.');
+      setError(err.message || 'Unable to generate TOTP.');
+    } finally {
+      setTotpLoading(false);
+    }
+  };
+
   const formatDateTime = (dateStr) => {
     if (!dateStr) return 'N/A';
     return new Date(dateStr).toLocaleString('en-IN', {
@@ -88,6 +139,13 @@ const AccessToken = () => {
   };
 
   const statusDisplay = getStatusDisplay();
+  const hasGeneratedTotp = Boolean(totpData?.otp);
+  const isTotpActive = hasGeneratedTotp && totpSecondsRemaining > 0;
+  const totpStatusPill = isTotpActive
+    ? { label: 'LIVE', bg: 'bg-green-100', textColor: 'text-green-700', icon: 'check_circle' }
+    : hasGeneratedTotp
+      ? { label: 'EXPIRED', bg: 'bg-red-100', textColor: 'text-red-700', icon: 'history' }
+      : { label: 'IDLE', bg: 'bg-gray-100', textColor: 'text-gray-600', icon: 'schedule' };
 
   return (
     <div className="relative flex h-full min-h-screen min-h-[100dvh] w-full flex-col max-w-md mx-auto bg-[#f6f7f8] overflow-x-hidden pb-20 sm:pb-24">
@@ -177,6 +235,82 @@ const AccessToken = () => {
               )}
             </div>
 
+            {/* TOTP Generator */}
+            <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
+              <div className="flex items-start justify-between gap-3 mb-4">
+                <div className="flex items-start gap-3">
+                  <div className="size-10 rounded-xl bg-emerald-50 flex items-center justify-center shrink-0">
+                    <span className="material-symbols-outlined text-[22px] text-emerald-600">pin</span>
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-[#111418]">Generate TOTP</h3>
+                    <p className="text-xs text-[#617589] mt-0.5">Generate the current Zerodha OTP from the active credential without using the CLI script.</p>
+                  </div>
+                </div>
+                <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full ${totpStatusPill.bg}`}>
+                  <span className={`material-symbols-outlined text-[16px] ${totpStatusPill.textColor}`}>{totpStatusPill.icon}</span>
+                  <span className={`text-xs font-semibold ${totpStatusPill.textColor}`}>{totpStatusPill.label}</span>
+                </div>
+              </div>
+
+              <div className="rounded-2xl bg-[#111418] text-white px-4 py-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[10px] uppercase tracking-[0.18em] text-white/60 mb-2">Current OTP</p>
+                    <p className="font-mono text-[2rem] leading-none tracking-[0.28em] text-white">
+                      {totpData?.otp || '------'}
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-[10px] uppercase tracking-[0.18em] text-white/60 mb-1">Expires In</p>
+                    <p className={`text-2xl font-bold ${isTotpActive ? 'text-white' : 'text-red-300'}`}>
+                      {hasGeneratedTotp ? `${totpSecondsRemaining}s` : '--'}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-4 grid grid-cols-2 gap-2.5">
+                  <div className="rounded-xl bg-white/5 p-3">
+                    <p className="text-[10px] uppercase tracking-wide text-white/60 mb-1">Credential User</p>
+                    <p className="text-sm font-semibold text-white">{totpData?.userId || tokenStatus.user_id || 'N/A'}</p>
+                  </div>
+                  <div className="rounded-xl bg-white/5 p-3">
+                    <p className="text-[10px] uppercase tracking-wide text-white/60 mb-1">Generated At</p>
+                    <p className="text-xs font-semibold text-white">
+                      {totpData?.generatedAt ? formatDateTime(totpData.generatedAt) : 'Not generated'}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {totpStatusMessage && (
+                <div className="mt-3 rounded-xl border border-gray-200 bg-[#f6f7f8] px-3 py-2.5 text-xs text-[#617589]">
+                  {totpStatusMessage}
+                </div>
+              )}
+
+              <div className="mt-4 flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-[#111418]">
+                    {isTotpActive ? 'OTP is ready to use' : 'Generate a fresh OTP when needed'}
+                  </p>
+                  <p className="text-[10px] sm:text-xs text-[#617589] mt-0.5">
+                    {isTotpActive
+                      ? 'The card updates the countdown locally until the current code expires.'
+                      : 'This does not change access tokens or trigger the auto-login workflow.'}
+                  </p>
+                </div>
+                <button
+                  onClick={handleGenerateTOTP}
+                  disabled={totpLoading}
+                  className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white px-3.5 py-2 rounded-lg text-xs font-semibold transition-colors disabled:opacity-50 shrink-0"
+                >
+                  <span className={`material-symbols-outlined text-[16px] ${totpLoading ? 'animate-spin' : ''}`}>pin</span>
+                  {totpLoading ? 'Generating...' : totpData ? 'Refresh OTP' : 'Generate OTP'}
+                </button>
+              </div>
+            </div>
+
             {/* Auto Refresh */}
             <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
               <div className="flex items-center justify-between gap-3">
@@ -252,9 +386,9 @@ const AccessToken = () => {
             <span className="material-symbols-outlined text-[20px] sm:text-[24px]">corporate_fare</span>
             <span className="text-[10px] font-medium">Brokers</span>
           </button>
-          <button onClick={() => navigate('/admin/logs')} className="flex flex-col items-center gap-0.5 sm:gap-1 w-full h-full justify-center text-gray-500 hover:text-[#137fec] transition-colors">
-            <span className="material-symbols-outlined text-[20px] sm:text-[24px]">list_alt</span>
-            <span className="text-[10px] font-medium">Logs</span>
+          <button onClick={() => navigate('/admin/chats')} className="flex flex-col items-center gap-0.5 sm:gap-1 w-full h-full justify-center text-gray-500 hover:text-[#137fec] transition-colors">
+            <span className="material-symbols-outlined text-[20px] sm:text-[24px]">chat</span>
+            <span className="text-[10px] font-medium">Chats</span>
           </button>
           <button onClick={() => navigate('/admin/settings')} className="flex flex-col items-center gap-0.5 sm:gap-1 w-full h-full justify-center text-gray-500 hover:text-[#137fec] transition-colors">
             <span className="material-symbols-outlined text-[20px] sm:text-[24px]">settings</span>

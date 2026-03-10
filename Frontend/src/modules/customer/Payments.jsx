@@ -4,7 +4,7 @@ import TopHeader from '../../components/shared/TopHeader';
 import customerApi from '../../api/customer';
 
 const ADD_STATUS_META = {
-  pending_proof: { label: 'Pending Proof', className: 'bg-amber-50 dark:bg-amber-900/20 text-amber-700' },
+  pending_proof: { label: 'Pending', className: 'bg-amber-50 dark:bg-amber-900/20 text-amber-700' }, // Legacy status
   pending: { label: 'Pending Approval', className: 'bg-blue-50 dark:bg-blue-900/20 text-blue-600' },
   verified: { label: 'Approved', className: 'bg-green-50 dark:bg-emerald-900/20 text-green-600 dark:text-emerald-400' },
   rejected: { label: 'Rejected', className: 'bg-red-50 dark:bg-red-900/20 text-red-600' },
@@ -49,10 +49,6 @@ const Payments = () => {
   const [addFundRequests, setAddFundRequests] = useState([]);
   const [withdrawalRequests, setWithdrawalRequests] = useState([]);
   const [paymentInfo, setPaymentInfo] = useState(null);
-
-  const [proofFiles, setProofFiles] = useState({});
-  const [paymentRefs, setPaymentRefs] = useState({});
-  const [uploadingRequestId, setUploadingRequestId] = useState('');
   const [showQr, setShowQr] = useState(false);
 
   const fetchRecords = async () => {
@@ -78,54 +74,6 @@ const Payments = () => {
   useEffect(() => {
     fetchRecords();
   }, []);
-
-  const uploadProofImage = async (file) => {
-    const sigRes = await customerApi.getFundsUploadSignature();
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('api_key', sigRes.apiKey);
-    formData.append('timestamp', sigRes.timestamp);
-    formData.append('signature', sigRes.signature);
-    formData.append('folder', sigRes.folder);
-
-    const uploadRes = await fetch(
-      `https://api.cloudinary.com/v1_1/${sigRes.cloudName}/image/upload`,
-      { method: 'POST', body: formData }
-    );
-    const data = await uploadRes.json();
-
-    if (!data.secure_url) {
-      throw new Error('Image upload failed');
-    }
-
-    return {
-      url: data.secure_url,
-      publicId: data.public_id,
-    };
-  };
-
-  const handleSubmitProof = async (requestId) => {
-    const file = proofFiles[requestId];
-    if (!file) return;
-
-    setUploadingRequestId(requestId);
-    setError('');
-    try {
-      const uploaded = await uploadProofImage(file);
-      await customerApi.submitAddFundsProof(requestId, {
-        proof_url: uploaded.url,
-        proof_public_id: uploaded.publicId,
-        payment_reference: paymentRefs[requestId] || '',
-      });
-
-      setProofFiles((prev) => ({ ...prev, [requestId]: null }));
-      await fetchRecords();
-    } catch (err) {
-      setError(err?.response?.data?.message || err.message || 'Failed to submit payment proof.');
-    } finally {
-      setUploadingRequestId('');
-    }
-  };
 
   const pendingRequestCount = useMemo(
     () => addFundRequests.filter((r) => r.status === 'pending_proof' || r.status === 'pending').length,
@@ -203,10 +151,7 @@ const Payments = () => {
           ) : (
             <div className="space-y-3">
               {addFundRequests.map((request) => {
-                const statusMeta = ADD_STATUS_META[request.status] || ADD_STATUS_META.pending_proof;
-                const isAwaitingProof = request.status === 'pending_proof' || request.status === 'rejected';
-                const isUploading = uploadingRequestId === request.id;
-                const selectedFile = proofFiles[request.id];
+                const statusMeta = ADD_STATUS_META[request.status] || ADD_STATUS_META.pending;
                 const highlight = request.id === highlightedRequestId;
 
                 return (
@@ -223,56 +168,19 @@ const Payments = () => {
                           {formatDateTime(request.createdAt)}
                         </p>
                         <p className="text-[10px] text-[#617589] dark:text-[#9cb7aa] mt-1 font-mono">{request.id}</p>
+                        {request.utrNumber && (
+                          <p className="text-[10px] text-[#617589] dark:text-[#9cb7aa] mt-1">UTR: {request.utrNumber}</p>
+                        )}
                       </div>
                       <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${statusMeta.className}`}>
                         {statusMeta.label}
                       </span>
                     </div>
 
-                    {request.proofUrl && (
-                      <div className="mt-2.5 rounded-lg overflow-hidden border border-gray-200 dark:border-[#22352d] bg-[#f6f7f8] dark:bg-[#16231d]">
-                        <img src={request.proofUrl} alt="Proof" className="w-full h-32 object-cover" />
-                      </div>
-                    )}
-
                     {request.rejectionReason && (
                       <p className="mt-2 text-[11px] text-red-600 bg-red-50 border border-red-100 rounded-lg p-2">
                         Rejected: {request.rejectionReason}
                       </p>
-                    )}
-
-                    {isAwaitingProof && (
-                      <div className="mt-3 space-y-2.5">
-                        <div className="rounded-lg border border-dashed border-gray-300 dark:border-[#22352d] p-2.5">
-                          <input
-                            type="file"
-                            accept="image/*"
-                            onChange={(e) => {
-                              const file = e.target.files?.[0];
-                              setProofFiles((prev) => ({ ...prev, [request.id]: file || null }));
-                            }}
-                            className="w-full text-xs"
-                          />
-                          {selectedFile && (
-                            <p className="text-[11px] text-[#617589] dark:text-[#9cb7aa] mt-1">Selected: {selectedFile.name}</p>
-                          )}
-                        </div>
-
-                        <input
-                          value={paymentRefs[request.id] || ''}
-                          onChange={(e) => setPaymentRefs((prev) => ({ ...prev, [request.id]: e.target.value }))}
-                          placeholder="UTR / Reference (optional)"
-                          className="w-full rounded-lg border border-gray-200 dark:border-[#22352d] dark:bg-[#16231d] dark:text-[#e8f3ee] px-3 py-2 text-sm outline-none focus:border-[#137fec]"
-                        />
-
-                        <button
-                          onClick={() => handleSubmitProof(request.id)}
-                          disabled={!selectedFile || isUploading}
-                          className="w-full rounded-lg bg-[#137fec] text-white py-2.5 text-sm font-bold disabled:opacity-50"
-                        >
-                          {isUploading ? 'Submitting...' : 'Submit Proof'}
-                        </button>
-                      </div>
                     )}
                   </div>
                 );

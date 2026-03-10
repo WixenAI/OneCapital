@@ -4,6 +4,7 @@ import { useAuth } from '../../context/AuthContext';
 import { usePWAInstall } from '../../context/PWAInstallContext';
 import customerApi from '../../api/customer';
 import { readSessionCache, writeSessionCache, clearSessionCache } from '../../utils/sessionCache';
+import { ProfileWarningBanner } from '../../components/shared/WarningBanner';
 
 const PROFILE_CACHE_KEY = 'profile_tab_v1';
 const PROFILE_CACHE_TTL_MS = 60 * 1000;
@@ -177,6 +178,9 @@ const Profile = () => {
           )}
         </div>
       </div>
+
+      {/* Admin Warning Banner */}
+      <ProfileWarningBanner />
 
       {/* KYC Verification */}
       <div className="px-3 sm:px-4 mt-5 sm:mt-6">

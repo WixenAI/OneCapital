@@ -236,10 +236,15 @@ const ClientList = () => {
                       <div className="flex flex-1 flex-col justify-center">
                         <p className="text-[#111418] text-sm sm:text-base font-bold leading-tight">{client.name}</p>
                         <p className="text-[#617589] text-xs sm:text-sm font-medium leading-normal">ID: {client.id}</p>
-                        <div className="flex items-center mt-1 gap-1">
+                        <div className="flex items-center mt-1 gap-1 flex-wrap">
                           <span className={`text-[9px] sm:text-[10px] font-bold px-1.5 py-0.5 rounded uppercase ${getStatusColor(client.status)}`}>
                             {client.status}
                           </span>
+                          {client.blockedByAdmin && (
+                            <span className="text-[9px] sm:text-[10px] font-bold px-1.5 py-0.5 rounded uppercase bg-purple-100 text-purple-700">
+                              Admin Suspended
+                            </span>
+                          )}
                           {client.status !== 'blocked' && !client.tradingEnabled && (
                             <span className="text-[9px] sm:text-[10px] font-bold px-1.5 py-0.5 rounded uppercase bg-orange-100 text-orange-700">
                               No Trading
@@ -250,9 +255,10 @@ const ClientList = () => {
                     </div>
                     <div className="shrink-0 flex flex-col items-end justify-between">
                       <button
-                        className={`${client.status === 'blocked' ? 'bg-gray-200 text-gray-400 cursor-not-allowed' : 'bg-[#137fec]/10 text-[#137fec]'} p-1.5 sm:p-2 rounded-lg flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm font-bold`}
-                        disabled={client.status === 'blocked'}
+                        className={`${client.status === 'blocked' || client.blockedByAdmin ? 'bg-gray-200 text-gray-400 cursor-not-allowed' : 'bg-[#137fec]/10 text-[#137fec]'} p-1.5 sm:p-2 rounded-lg flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm font-bold`}
+                        disabled={client.status === 'blocked' || client.blockedByAdmin}
                         onClick={(e) => { e.stopPropagation(); handleLoginAs(client.id); }}
+                        title={client.blockedByAdmin ? 'Account suspended by admin' : undefined}
                       >
                         <span className="material-symbols-outlined text-base sm:text-lg">login</span>
                         <span>View</span>
@@ -268,29 +274,36 @@ const ClientList = () => {
                       <span className="material-symbols-outlined text-[16px] sm:text-[18px]">key</span>
                       <span>Credentials</span>
                     </button>
-                    <div className="flex items-center gap-2.5 sm:gap-3">
-                      {client.status === 'blocked' ? (
-                        <button onClick={() => handleUnblock(client.id)} disabled={actionLoading === client.id} className="flex flex-col items-center">
-                          <div className="rounded-full bg-[#137fec]/10 border border-[#137fec]/20 p-1.5 sm:p-2 text-[#137fec] cursor-pointer">
-                            <span className="material-symbols-outlined text-[18px] sm:text-[20px]">lock_open</span>
+                    {client.blockedByAdmin ? (
+                      <div className="flex items-center gap-1.5 text-purple-600 text-xs sm:text-sm font-medium">
+                        <span className="material-symbols-outlined text-[16px]">admin_panel_settings</span>
+                        <span>Admin control only</span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2.5 sm:gap-3">
+                        {client.status === 'blocked' ? (
+                          <button onClick={() => handleUnblock(client.id)} disabled={actionLoading === client.id} className="flex flex-col items-center">
+                            <div className="rounded-full bg-[#137fec]/10 border border-[#137fec]/20 p-1.5 sm:p-2 text-[#137fec] cursor-pointer">
+                              <span className="material-symbols-outlined text-[18px] sm:text-[20px]">lock_open</span>
+                            </div>
+                            <p className="text-[9px] sm:text-[10px] mt-0.5 sm:mt-1 font-bold text-[#137fec]">Unblock</p>
+                          </button>
+                        ) : (
+                          <button onClick={() => handleBlock(client.id)} disabled={actionLoading === client.id} className="flex flex-col items-center">
+                            <div className="rounded-full bg-white border border-gray-200 p-1.5 sm:p-2 text-[#111418] cursor-pointer hover:bg-gray-100">
+                              <span className="material-symbols-outlined text-[18px] sm:text-[20px]">block</span>
+                            </div>
+                            <p className="text-[9px] sm:text-[10px] mt-0.5 sm:mt-1 font-medium text-[#617589]">Block</p>
+                          </button>
+                        )}
+                        <button onClick={() => setDeleteConfirm(client.id)} className="flex flex-col items-center">
+                          <div className="rounded-full bg-white border border-gray-200 p-1.5 sm:p-2 text-red-500 cursor-pointer hover:bg-red-50">
+                            <span className="material-symbols-outlined text-[18px] sm:text-[20px]">delete</span>
                           </div>
-                          <p className="text-[9px] sm:text-[10px] mt-0.5 sm:mt-1 font-bold text-[#137fec]">Unblock</p>
+                          <p className="text-[9px] sm:text-[10px] mt-0.5 sm:mt-1 font-medium text-[#617589]">Delete</p>
                         </button>
-                      ) : (
-                        <button onClick={() => handleBlock(client.id)} disabled={actionLoading === client.id} className="flex flex-col items-center">
-                          <div className="rounded-full bg-white border border-gray-200 p-1.5 sm:p-2 text-[#111418] cursor-pointer hover:bg-gray-100">
-                            <span className="material-symbols-outlined text-[18px] sm:text-[20px]">block</span>
-                          </div>
-                          <p className="text-[9px] sm:text-[10px] mt-0.5 sm:mt-1 font-medium text-[#617589]">Block</p>
-                        </button>
-                      )}
-                      <button onClick={() => setDeleteConfirm(client.id)} className="flex flex-col items-center">
-                        <div className="rounded-full bg-white border border-gray-200 p-1.5 sm:p-2 text-red-500 cursor-pointer hover:bg-red-50">
-                          <span className="material-symbols-outlined text-[18px] sm:text-[20px]">delete</span>
-                        </div>
-                        <p className="text-[9px] sm:text-[10px] mt-0.5 sm:mt-1 font-medium text-[#617589]">Delete</p>
-                      </button>
-                    </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               ))

@@ -7,3 +7,4 @@ export * from './CustomerController.js';
 export * from './KycController.js';
 export * from './LogsController.js';
 export * from './ApiKeyController.js';
+export * from './KiteController.js';

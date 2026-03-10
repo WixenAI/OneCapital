@@ -15,6 +15,9 @@ import {
   toggleHoldingsExit,
   getCustomerCredentials,
   loginAsCustomer,
+  setWarning,
+  clearWarning,
+  clearStatement,
 } from '../../Controllers/admin/CustomerController.js';
 
 const router = express.Router();
@@ -31,5 +34,8 @@ router.post('/customers/:id/trading/disable', disableTrading);
 router.put('/customers/:id/holdings-exit', toggleHoldingsExit);
 router.get('/customers/:id/credentials', getCustomerCredentials);
 router.post('/customers/:id/login-as', loginAsCustomer);
+router.post('/customers/:id/warning', setWarning);
+router.delete('/customers/:id/warning', clearWarning);
+router.delete('/customers/:id/statement', clearStatement);
 
 export default router;

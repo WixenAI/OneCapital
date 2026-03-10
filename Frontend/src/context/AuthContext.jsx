@@ -4,7 +4,13 @@
  */
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import authApi from '../api/auth';
-import { getStoredUser, clearTokens, setStoredUser } from '../api/index';
+import {
+  getStoredUser,
+  clearTokens,
+  setStoredUser,
+  setCustomerAuthNotice,
+  consumeCustomerAuthNotice,
+} from '../api/index';
 
 const AuthContext = createContext(null);
 const CUSTOMER_CFD_WARNING_REQUIRED_KEY = 'customer_cfd_warning_required';
@@ -23,6 +29,39 @@ export const AuthProvider = ({ children }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [sessionBoot, setSessionBoot] = useState({ hydrated: false, restored: false });
+
+  const applyResolvedUser = useCallback((resolvedUser) => {
+    setUser((prevUser) => {
+      if (prevUser && JSON.stringify(prevUser) === JSON.stringify(resolvedUser)) {
+        return prevUser;
+      }
+      return resolvedUser;
+    });
+    setStoredUser(resolvedUser);
+  }, []);
+
+  const invalidateSession = useCallback((message = 'Session expired. Please login again.') => {
+    const notice = message || 'Session expired. Please login again.';
+    setCustomerAuthNotice(notice);
+    clearTokens();
+    try {
+      sessionStorage.removeItem(CUSTOMER_CFD_WARNING_REQUIRED_KEY);
+      sessionStorage.removeItem(CUSTOMER_REENTRY_REDIRECT_DONE_KEY);
+    } catch {
+      // No-op: session storage may be unavailable in private mode.
+    }
+    setUser(null);
+    setError(notice);
+    setSessionBoot({ hydrated: true, restored: false });
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    const pendingNotice = consumeCustomerAuthNotice();
+    if (pendingNotice) {
+      setError(pendingNotice);
+    }
+  }, []);
 
   // Initialize auth state from localStorage
   useEffect(() => {
@@ -44,14 +83,11 @@ export const AuthProvider = ({ children }) => {
           try {
             const profile = await authApi.getProfile();
             const resolvedUser = { ...(profile.user || profile), role: 'customer' };
-            setUser(resolvedUser);
-            setStoredUser(resolvedUser);
+            applyResolvedUser(resolvedUser);
             setSessionBoot({ hydrated: true, restored: true });
-          } catch {
+          } catch (err) {
             // Token expired or invalid
-            clearTokens();
-            setUser(null);
-            setSessionBoot({ hydrated: true, restored: false });
+            invalidateSession(err?.message || 'Session expired. Please login again.');
           }
         } else {
           // Another role session (broker/admin) should not be treated as customer auth.
@@ -67,7 +103,50 @@ export const AuthProvider = ({ children }) => {
     };
 
     initAuth();
-  }, []);
+  }, [applyResolvedUser, invalidateSession]);
+
+  useEffect(() => {
+    if (loading || !user || user.role !== 'customer') return undefined;
+
+    let cancelled = false;
+    let validating = false;
+
+    const validateSession = async () => {
+      if (cancelled || validating) return;
+      validating = true;
+
+      try {
+        const profile = await authApi.getProfile();
+        if (cancelled) return;
+        const resolvedUser = { ...(profile.user || profile), role: 'customer' };
+        applyResolvedUser(resolvedUser);
+      } catch (err) {
+        if (cancelled) return;
+        if (err?.status === 401 || err?.status === 403) {
+          invalidateSession(err?.message || 'Session expired. Please login again.');
+        }
+      } finally {
+        validating = false;
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        validateSession();
+      }
+    };
+
+    const intervalId = window.setInterval(validateSession, 30000);
+    window.addEventListener('focus', validateSession);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', validateSession);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [applyResolvedUser, invalidateSession, loading, user]);
 
   /**
    * Login with email and password
@@ -78,8 +157,7 @@ export const AuthProvider = ({ children }) => {
     try {
       const response = await authApi.login(email, password);
       const resolvedUser = { ...(response.user || {}), role: 'customer' };
-      setUser(resolvedUser);
-      setStoredUser(resolvedUser);
+      applyResolvedUser(resolvedUser);
       setSessionBoot({ hydrated: true, restored: false });
       try {
         sessionStorage.setItem(CUSTOMER_CFD_WARNING_REQUIRED_KEY, '1');
@@ -95,7 +173,7 @@ export const AuthProvider = ({ children }) => {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [applyResolvedUser]);
 
   /**
    * Signup / Register new user
@@ -174,14 +252,13 @@ export const AuthProvider = ({ children }) => {
     try {
       const profile = await authApi.getProfile();
       const resolvedUser = { ...(profile.user || profile), role: 'customer' };
-      setUser(resolvedUser);
-      setStoredUser(resolvedUser);
+      applyResolvedUser(resolvedUser);
       return profile;
     } catch (err) {
       console.error('Failed to refresh profile:', err);
       throw err;
     }
-  }, []);
+  }, [applyResolvedUser]);
 
   const value = {
     user,

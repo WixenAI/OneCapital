@@ -8,6 +8,18 @@ import CustomerModel from '../../Model/Auth/CustomerModel.js';
 
 const router = express.Router();
 
+const buildSuspendedPayload = () => ({
+  success: false,
+  code: 'ACCOUNT_SUSPENDED',
+  message: 'Account suspended.',
+});
+
+const buildInactivePayload = () => ({
+  success: false,
+  code: 'ACCOUNT_INACTIVE',
+  message: 'Account inactive. Please contact your broker.',
+});
+
 /**
  * @route   POST /api/customer/auth/login
  * @desc    Customer login
@@ -57,17 +69,11 @@ router.post('/auth/login', asyncHandler(async (req, res) => {
 
   // Check account status
   if (customer.status === 'blocked') {
-    return res.status(403).json({
-      success: false,
-      message: 'Your account has been blocked. Please contact support.',
-    });
+    return res.status(403).json(buildSuspendedPayload());
   }
 
   if (customer.status === 'inactive') {
-    return res.status(403).json({
-      success: false,
-      message: 'Your account is inactive. Please contact your broker.',
-    });
+    return res.status(403).json(buildInactivePayload());
   }
 
   // Update last login
@@ -140,6 +146,14 @@ router.post('/auth/refresh-token', asyncHandler(async (req, res) => {
         success: false,
         message: 'Invalid refresh token.',
       });
+    }
+
+    if (customer.status === 'blocked') {
+      return res.status(403).json(buildSuspendedPayload());
+    }
+
+    if (customer.status === 'inactive') {
+      return res.status(403).json(buildInactivePayload());
     }
 
     // Generate new access token

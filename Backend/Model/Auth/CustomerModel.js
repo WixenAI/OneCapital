@@ -54,6 +54,19 @@ const CustomerSchema = new Schema({
     type: String,
     enum: ['EQUITY', 'F&O', 'COMMODITY', 'CURRENCY']
   }],
+
+  // Admin Warning System
+  admin_warning_active: { type: Boolean, default: false },
+  admin_warning_message: { type: String, default: '' },
+  admin_warning_created_at: { type: Date },
+  admin_warning_updated_at: { type: Date },
+  admin_warning_created_by: { type: Schema.Types.ObjectId, ref: 'Admin' },
+
+  // Block tracking (formalized)
+  block_reason: { type: String },
+  blocked_at: { type: Date },
+  blocked_by: { type: Schema.Types.ObjectId, ref: 'Admin' },
+  trading_disabled_reason: { type: String },
   
   // Settings
   settings: {

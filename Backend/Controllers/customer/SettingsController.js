@@ -249,6 +249,35 @@ const getProfilePhotoUploadSignature = asyncHandler(async (_req, res) => {
   });
 });
 
+/**
+ * @desc     Get active admin warning for current customer
+ * @route    GET /api/customer/warning
+ * @access   Private (Customer only)
+ */
+const getWarning = asyncHandler(async (req, res) => {
+  const customerId = req.user.customer_id;
+  const customer = await CustomerModel.findOne({ customer_id: customerId }).select(
+    'admin_warning_active admin_warning_message admin_warning_created_at admin_warning_updated_at'
+  );
+
+  if (!customer) {
+    return res.status(404).json({
+      success: false,
+      message: 'Customer not found.',
+    });
+  }
+
+  res.status(200).json({
+    success: true,
+    warning: {
+      active: customer.admin_warning_active || false,
+      message: customer.admin_warning_active ? customer.admin_warning_message : '',
+      createdAt: customer.admin_warning_active ? customer.admin_warning_created_at : null,
+      updatedAt: customer.admin_warning_active ? customer.admin_warning_updated_at : null,
+    },
+  });
+});
+
 export {
   getSettings,
   updateSettings,
@@ -256,4 +285,5 @@ export {
   updateNotifications,
   uploadProfilePhoto,
   getProfilePhotoUploadSignature,
+  getWarning,
 };

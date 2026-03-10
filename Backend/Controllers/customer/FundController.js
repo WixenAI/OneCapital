@@ -444,6 +444,7 @@ const requestAddFunds = asyncHandler(async (req, res) => {
   const customerIdStr = req.user.customer_id;
   const brokerIdStr = req.user.stringBrokerId;
   const amount = toNumber(req.body?.amount);
+  const utrNumber = typeof req.body?.utr_number === 'string' ? req.body.utr_number.trim() : '';
 
   if (amount <= 0) {
     return res.status(400).json({
@@ -458,11 +459,12 @@ const requestAddFunds = asyncHandler(async (req, res) => {
     amount,
     'upi',
     '',
-    '',
+    '', // proofUrl deprecated
     {
       customerMongoId: req.user._id,
       customerName: req.user.name,
       brokerMongoId: req.user.mongoBrokerId,
+      utrNumber, // Pass optional UTR/transaction ID
     }
   );
 
@@ -470,105 +472,25 @@ const requestAddFunds = asyncHandler(async (req, res) => {
 
   res.status(201).json({
     success: true,
-    message: 'Request created. Upload payment proof after completing UPI transfer.',
+    message: 'Request submitted for verification.',
     request: paymentRequest,
     paymentInfo,
   });
 });
 
 /**
- * @desc     Submit payment proof for an add-funds request (image only)
+ * @desc     DEPRECATED: Submit payment proof for an add-funds request
  * @route    POST /api/customer/funds/add/:id/proof
  * @access   Private (Customer only)
+ * @deprecated Screenshot proof upload is no longer required. Deposits now go directly to pending status.
  */
-const submitAddFundsProof = asyncHandler(async (req, res) => {
-  const customerMongoId = req.user._id;
-  const brokerIdStr = req.user.stringBrokerId;
-  const { id } = req.params;
-  const {
-    proof_url: proofUrlRaw,
-    proof_public_id: proofPublicIdRaw,
-    payment_reference: paymentReferenceRaw,
-  } = req.body || {};
-
-  const proofUrl = typeof proofUrlRaw === 'string' ? proofUrlRaw.trim() : '';
-  const proofPublicId = typeof proofPublicIdRaw === 'string' ? proofPublicIdRaw.trim() : '';
-  const paymentReference = typeof paymentReferenceRaw === 'string' ? paymentReferenceRaw.trim() : '';
-
-  if (!proofUrl) {
-    return res.status(400).json({
-      success: false,
-      message: 'Proof image is required.',
-    });
-  }
-
-  const request = await PaymentProofModel.findOne({
-    _id: id,
-    customer_id: customerMongoId,
-    broker_id_str: brokerIdStr,
+const submitAddFundsProof = asyncHandler(async (_req, res) => {
+  // Screenshot proof upload is deprecated - deposits no longer require proof images
+  return res.status(410).json({
+    success: false,
+    message: 'Screenshot proof upload is no longer required. Your deposit request is already pending verification.',
   });
 
-  if (!request) {
-    return res.status(404).json({
-      success: false,
-      message: 'Add-funds request not found.',
-    });
-  }
-
-  if (request.status === 'verified') {
-    return res.status(400).json({
-      success: false,
-      message: 'This request is already verified.',
-    });
-  }
-
-  request.proof_type = 'image';
-  request.proof_url = proofUrl;
-  request.proof_public_id = proofPublicId || '';
-  request.proof_uploaded_at = new Date();
-  request.payment_reference = paymentReference || request.payment_reference || '';
-  request.rejection_reason = '';
-  request.status = 'pending';
-  await request.save();
-
-  await writeAuditSuccess({
-    req,
-    type: 'transaction',
-    eventType: 'PAYMENT_PROOF_SUBMIT',
-    category: 'funds',
-    message: `Payment proof was submitted for add-funds request ${request.payment_reference || request._id?.toString()} by customer ${req.user.customer_id}.`,
-    target: {
-      type: 'customer',
-      id: req.user._id,
-      id_str: req.user.customer_id,
-    },
-    entity: {
-      type: 'payment_proof',
-      id: request._id,
-      ref: request.payment_reference || request._id?.toString(),
-    },
-    broker: {
-      broker_id: req.user.mongoBrokerId,
-      broker_id_str: brokerIdStr,
-    },
-    customer: {
-      customer_id: req.user._id,
-      customer_id_str: req.user.customer_id,
-    },
-    amountDelta: toNumber(request.amount),
-    note: `Amount under review: ${formatCurrency(request.amount)}. Waiting for broker review.`,
-    metadata: {
-      status: request.status,
-      paymentReference: request.payment_reference || '',
-      proofPublicId: request.proof_public_id || '',
-    },
-  });
-
-  res.status(200).json({
-    success: true,
-    message: 'Proof submitted successfully. Waiting for broker approval.',
-    request: mapPaymentRequest(request),
-  });
 });
 
 /**
@@ -782,25 +704,16 @@ const getWithdrawalRequests = asyncHandler(async (req, res) => {
 });
 
 /**
- * @desc     Get Cloudinary upload signature for payment proof (image only)
+ * @desc     DEPRECATED: Get Cloudinary upload signature for payment proof
  * @route    GET /api/customer/funds/upload-signature
  * @access   Private (Customer only)
+ * @deprecated Screenshot proof upload is no longer required.
  */
 const getFundsUploadSignature = asyncHandler(async (_req, res) => {
-  const timestamp = Math.round(Date.now() / 1000);
-  const folder = 'fund_payment_proofs';
-  const signature = cloudinary.utils.api_sign_request(
-    { timestamp, folder },
-    process.env.CLOUDINARY_API_SECRET || ''
-  );
-
-  res.status(200).json({
-    success: true,
-    signature,
-    timestamp,
-    folder,
-    cloudName: process.env.CLOUDINARY_CLOUD_NAME,
-    apiKey: process.env.CLOUDINARY_API_KEY,
+  // Screenshot proof upload is deprecated - no longer needed
+  return res.status(410).json({
+    success: false,
+    message: 'Screenshot proof upload is no longer required. Deposits are verified without proof images.',
   });
 });
 

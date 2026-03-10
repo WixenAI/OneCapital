@@ -210,6 +210,7 @@ const getAllClients = asyncHandler(async (req, res) => {
     profilePhoto: customer.profile_photo || null,
     joiningDate: formatDate(customer.createdAt),
     lastLogin: customer.last_login,
+    blockedByAdmin: !!customer.blocked_by, // True if blocked by admin (blocked_by references Admin model)
   }));
 
   res.status(200).json({
@@ -283,6 +284,8 @@ const getClientById = asyncHandler(async (req, res) => {
       settings: customer.settings,
       joiningDate: formatDate(customer.createdAt),
       lastLogin: customer.last_login,
+      blockedByAdmin: !!customer.blocked_by, // True if blocked by admin (blocked_by references Admin model)
+      blockReason: customer.block_reason || null,
       funds: fund ? {
         balance: (fund.net_available_balance || 0) + (fund.pnl_balance || 0),
         intradayLimit: fund.intraday?.available_limit || 0,

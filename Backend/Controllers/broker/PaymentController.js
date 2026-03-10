@@ -352,72 +352,16 @@ const rejectPayment = asyncHandler(async (req, res) => {
 });
 
 /**
- * @desc     Delete payment request
+ * @desc     DISABLED: Delete payment request (deposits are non-deletable)
  * @route    DELETE /api/broker/payments/:id
  * @access   Private (Broker only)
+ * @deprecated Deposit entries cannot be deleted for audit integrity.
  */
-const deletePayment = asyncHandler(async (req, res) => {
-  const brokerIdStr = req.user.login_id || req.user.stringBrokerId;
-  const { id } = req.params;
-
-  const payment = await PaymentProofModel.findOne({ _id: id, broker_id_str: brokerIdStr });
-
-  if (!payment) {
-    return res.status(404).json({
-      success: false,
-      message: 'Payment request not found.',
-    });
-  }
-
-  if (payment.status === 'verified') {
-    return res.status(400).json({
-      success: false,
-      message: 'Approved requests cannot be deleted.',
-    });
-  }
-
-  const deletedSnapshot = {
-    id: payment._id?.toString(),
-    customerId: payment.customer_id_str,
-    amount: toNumber(payment.amount),
-    status: payment.status,
-    paymentReference: payment.payment_reference || '',
-  };
-
-  await PaymentProofModel.deleteOne({ _id: payment._id });
-  const paymentRef = payment.payment_reference || payment._id?.toString() || '';
-
-  await writeAuditSuccess({
-    req,
-    type: 'transaction',
-    eventType: 'PAYMENT_DELETE',
-    category: 'funds',
-    message: `Add-funds request ${paymentRef} for customer ${payment.customer_id_str} was deleted by broker.`,
-    target: {
-      type: 'customer',
-      id: payment.customer_id,
-      id_str: payment.customer_id_str,
-    },
-    entity: {
-      type: 'payment_proof',
-      id: payment._id,
-      ref: paymentRef,
-    },
-    broker: {
-      broker_id_str: brokerIdStr,
-    },
-    customer: {
-      customer_id: payment.customer_id,
-      customer_id_str: payment.customer_id_str,
-    },
-    note: 'Deleted before verification.',
-    metadata: deletedSnapshot,
-  });
-
-  res.status(200).json({
-    success: true,
-    message: 'Payment request deleted.',
-    id: payment._id?.toString(),
+const deletePayment = asyncHandler(async (_req, res) => {
+  // Deposit entries are no longer deletable to ensure audit integrity
+  return res.status(403).json({
+    success: false,
+    message: 'Deposit entries cannot be deleted. They are preserved for audit purposes.',
   });
 });
 
@@ -551,13 +495,14 @@ const getPaymentHistory = asyncHandler(async (req, res) => {
 });
 
 // Helper function to create payment request (called from customer side)
+// UPDATED: Screenshot proof no longer required - always starts as 'pending'
 const createPaymentRequest = async (
   customerId,
   brokerId,
   amount,
   paymentMethod = 'upi',
   transactionRef = '',
-  proofUrl = '',
+  _proofUrl = '', // DEPRECATED: proof URL no longer used
   options = {}
 ) => {
   const parsedAmount = toNumber(amount);
@@ -569,8 +514,8 @@ const createPaymentRequest = async (
     throw new Error('Customer context is required to create payment request');
   }
 
-  const normalizedProofUrl = typeof proofUrl === 'string' ? proofUrl.trim() : '';
-  const hasProof = Boolean(normalizedProofUrl);
+  // Normalize optional UTR/transaction ID
+  const utrNumber = typeof options.utrNumber === 'string' ? options.utrNumber.trim() : '';
 
   const payment = await PaymentProofModel.create({
     customer_id: options.customerMongoId,
@@ -582,11 +527,13 @@ const createPaymentRequest = async (
     payment_method: paymentMethod === 'upi' ? 'upi' : 'upi',
     payment_reference: transactionRef || '',
     payment_date: new Date(),
+    utr_number: utrNumber || undefined,
+    // Screenshot proof fields deprecated - no longer populated
     proof_type: 'image',
-    proof_url: normalizedProofUrl || undefined,
-    proof_public_id: options.proofPublicId || undefined,
-    proof_uploaded_at: hasProof ? new Date() : null,
-    status: hasProof ? 'pending' : 'pending_proof',
+    proof_url: undefined,
+    proof_public_id: undefined,
+    proof_uploaded_at: null,
+    status: 'pending', // Always start as pending, no proof upload step
   });
 
   await writeAuditSuccess({
@@ -620,12 +567,11 @@ const createPaymentRequest = async (
       customer_id_str: customerId,
     },
     amountDelta: parsedAmount,
-    note: hasProof
-      ? `Requested amount: ${formatCurrency(parsedAmount)}. Proof submitted and pending review.`
-      : `Requested amount: ${formatCurrency(parsedAmount)}. Waiting for payment proof upload.`,
+    note: `Requested amount: ${formatCurrency(parsedAmount)}. Pending broker verification.`,
     metadata: {
       status: payment.status,
       paymentMethod: payment.payment_method,
+      utrNumber: utrNumber || undefined,
     },
   });
 

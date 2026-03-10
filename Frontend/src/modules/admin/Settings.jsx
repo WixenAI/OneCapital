@@ -8,12 +8,8 @@ const Settings = () => {
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
 
   const menuItems = [
-    { icon: 'person', label: 'Profile', description: 'View admin profile details', action: null },
-    { icon: 'security', label: 'Security', description: 'Password & authentication', action: null },
-    { icon: 'notifications', label: 'Notifications', description: 'Manage alert preferences', action: null },
     { icon: 'vpn_key', label: 'Access Token', description: 'Kite broker token status', action: () => navigate('/admin/access-token') },
     { icon: 'description', label: 'Logs', description: 'View system activity logs', action: () => navigate('/admin/logs') },
-    { icon: 'info', label: 'About', description: 'App version & legal info', action: null },
   ];
 
   return (
@@ -117,9 +113,9 @@ const Settings = () => {
             <span className="material-symbols-outlined text-[20px] sm:text-[24px]">corporate_fare</span>
             <span className="text-[10px] font-medium">Brokers</span>
           </button>
-          <button onClick={() => navigate('/admin/logs')} className="flex flex-col items-center gap-0.5 sm:gap-1 w-full h-full justify-center text-gray-500 hover:text-[#137fec] transition-colors">
-            <span className="material-symbols-outlined text-[20px] sm:text-[24px]">list_alt</span>
-            <span className="text-[10px] font-medium">Logs</span>
+          <button onClick={() => navigate('/admin/chats')} className="flex flex-col items-center gap-0.5 sm:gap-1 w-full h-full justify-center text-gray-500 hover:text-[#137fec] transition-colors">
+            <span className="material-symbols-outlined text-[20px] sm:text-[24px]">chat</span>
+            <span className="text-[10px] font-medium">Chats</span>
           </button>
           <button onClick={() => navigate('/admin/settings')} className="flex flex-col items-center gap-0.5 sm:gap-1 w-full h-full justify-center text-[#137fec]">
             <span className="material-symbols-outlined text-[20px] sm:text-[24px]">settings</span>
