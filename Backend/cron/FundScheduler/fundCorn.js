@@ -100,14 +100,14 @@ async function reconcileFundMargin(fund) {
 
 const FundCronJobs = () => {
   // ---------------------------------------------------------
-  // Job: Weekly Settlement Auto-Run at Monday 12:00 AM IST
+  // Job: Weekly Settlement Auto-Run at Sunday 12:00 AM IST
   // Honors broker setting: settings.settlement.auto_weekly_settlement_enabled
   // ---------------------------------------------------------
   cron.schedule(
-    '0 0 * * 1',
+    '0 0 * * 0',
     async () => {
-      await withLock('cron:fund:auto-weekly-settlement-0000-monday', 480, async () => {
-        console.log('[CRON] Running Auto Weekly Settlement (Monday 00:00 IST)...');
+      await withLock('cron:fund:auto-weekly-settlement-0000-sunday', 480, async () => {
+        console.log('[CRON] Running Auto Weekly Settlement (Sunday 00:00 IST)...');
         try {
           const summary = await runAutoWeeklySettlementForAllBrokers({ effectiveAt: new Date() });
           console.log(
@@ -121,7 +121,7 @@ const FundCronJobs = () => {
             message: `Auto weekly settlement cron completed. ${summary.attempted} brokers were processed, ${summary.skipped} were skipped, and ${summary.failed} failed.`,
             actor: { type: 'system', id_str: 'SYSTEM', role: 'system' },
             source: 'cron',
-            note: 'Monday 00:00 IST auto weekly settlement run completed.',
+            note: 'Sunday 00:00 IST auto weekly settlement run completed.',
             metadata: summary,
           });
         } catch (error) {

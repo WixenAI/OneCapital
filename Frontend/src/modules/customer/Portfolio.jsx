@@ -200,7 +200,7 @@ const sanitizePortfolioStateForCache = (state) => ({
   allHoldings: (state?.allHoldings || []).map(sanitizeCachedPortfolioRow),
   allOrdersTotalValue: toNumber(state?.allOrdersTotalValue),
   sessionBoundaryStart: state?.sessionBoundaryStart || '',
-  sessionBoundaryType: state?.sessionBoundaryType || 'auto_monday',
+  sessionBoundaryType: state?.sessionBoundaryType || 'trading_week_start',
 });
 
 const Portfolio = () => {
@@ -215,7 +215,7 @@ const Portfolio = () => {
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo] = useState('');
   const [sessionBoundaryStart, setSessionBoundaryStart] = useState('');
-  const [, setSessionBoundaryType] = useState('auto_monday');
+  const [, setSessionBoundaryType] = useState('trading_week_start');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [showFilters, setShowFilters] = useState(false);
@@ -249,7 +249,7 @@ const Portfolio = () => {
     setAllHoldings(nextState?.allHoldings || []);
     setAllOrdersTotalValue(nextState?.allOrdersTotalValue || 0);
     setSessionBoundaryStart(nextState?.sessionBoundaryStart || '');
-    setSessionBoundaryType(nextState?.sessionBoundaryType || 'auto_monday');
+    setSessionBoundaryType(nextState?.sessionBoundaryType || 'trading_week_start');
   }, []);
 
   const fetchPortfolio = useCallback(async (options = {}) => {
@@ -292,7 +292,7 @@ const Portfolio = () => {
         || '';
       const boundaryType = balanceRes?.summary?.weekBoundaryType
         || balanceRes?.settlement?.boundaryType
-        || 'auto_monday';
+        || 'trading_week_start';
 
       const hiddenStatuses = new Set(['CANCELLED', 'REJECTED']);
       const pendingStatuses = new Set(['PENDING', 'HOLD']);

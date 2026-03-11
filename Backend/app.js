@@ -139,6 +139,17 @@ export function createApp() {
 
   app.get("/health", (_req, res) => res.json({ ok: true }));
 
+  // Legacy Kite callback handler - redirect /api/ to /api/kite/callback for backward compatibility
+  // This handles the case when Kite redirect URL is configured as /api/ instead of /api/kite/callback
+  app.get("/api/", (req, res, next) => {
+    if (req.query.request_token || req.query.action === 'login') {
+      // Forward the entire query string to the kite callback
+      const queryString = new URLSearchParams(req.query).toString();
+      return res.redirect(`/api/kite/callback?${queryString}`);
+    }
+    next();
+  });
+
   app.use((req, res) => res.status(404).json({ error: "Not Found" }));
   app.use((err, _req, res, _next) => {
     console.error("API Error:", err);

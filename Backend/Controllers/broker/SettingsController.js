@@ -42,7 +42,7 @@ const getSettings = asyncHandler(async (req, res) => {
       // Weekly settlement
       settlement: {
         autoWeeklySettlementEnabled: broker.settings?.settlement?.auto_weekly_settlement_enabled !== false,
-        autoSettlementDay: 'monday',
+        autoSettlementDay: 'sunday',
         timezone: 'Asia/Kolkata',
       },
       // Notifications

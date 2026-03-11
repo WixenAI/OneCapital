@@ -7,6 +7,8 @@ import { resolveOrderPnl, getEffectiveEntryPrice } from '../../utils/calculateBr
 import { useMarketData } from '../../context/SocketContext';
 import customerApi from '../../api/customer';
 
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+
 const toNumber = (value, fallback = 0) => {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
@@ -30,6 +32,39 @@ const formatSignedPct = (value) => {
   return `${sign}${Math.abs(n).toFixed(2)}%`;
 };
 
+const getIstClockDate = (date = new Date()) => new Date(date.getTime() + IST_OFFSET_MS);
+
+const parseDate = (value) => {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const getIstDateKey = (value) => {
+  const parsed = parseDate(value);
+  if (!parsed) return '';
+  const istClock = getIstClockDate(parsed);
+  const year = istClock.getUTCFullYear();
+  const month = String(istClock.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(istClock.getUTCDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const isSettlementWeekendOpen = (date = new Date()) => {
+  const day = getIstClockDate(date).getUTCDay();
+  return day === 6 || day === 0;
+};
+
+const getNextSundayIst = (date = new Date()) => {
+  const istClock = getIstClockDate(date);
+  const day = istClock.getUTCDay();
+  const daysUntilSunday = day === 0 ? 7 : 7 - day;
+  const nextSunday = new Date(istClock);
+  nextSunday.setUTCDate(nextSunday.getUTCDate() + daysUntilSunday);
+  nextSunday.setUTCHours(0, 0, 0, 0);
+  return new Date(nextSunday.getTime() - IST_OFFSET_MS);
+};
+
 const ClientDetail = () => {
   const navigate = useNavigate();
   const { clientId } = useParams();
@@ -50,6 +85,7 @@ const ClientDetail = () => {
 
   const [client, setClient] = useState(null);
   const [ledger, setLedger] = useState(null);
+  const [clientBalanceSummary, setClientBalanceSummary] = useState(null);
 
   // Order data states (fetched via impersonation)
   const [openOrders, setOpenOrders] = useState([]);
@@ -111,13 +147,15 @@ const ClientDetail = () => {
       localStorage.setItem('accessToken', token);
 
       try {
-        const [ordersRes, holdingsRes] = await Promise.all([
+        const [ordersRes, holdingsRes, balanceRes] = await Promise.all([
           brokerApi.getClientOrders(clientId),
           brokerApi.getClientHoldingsOrders(clientId).catch(() => ({ holdings: [] })),
+          customerApi.getBalance().catch(() => ({})),
         ]);
 
         const allOrders = ordersRes.orders || ordersRes.data || [];
         const holdingsData = holdingsRes.holdings || holdingsRes.data || [];
+        const nextSummary = balanceRes?.summary || null;
 
         const mappedOrders = allOrders.map((order) => ({
           ...order,
@@ -189,6 +227,7 @@ const ClientDetail = () => {
         setOpenOrders(open);
         setClosedOrders(closed);
         setHoldingOrders(mergedHoldings);
+        setClientBalanceSummary(nextSummary);
       } finally {
         // Always restore broker token
         localStorage.setItem('accessToken', brokerToken);
@@ -196,6 +235,7 @@ const ClientDetail = () => {
       }
     } catch (err) {
       console.error('Failed to fetch client orders:', err);
+      setClientBalanceSummary(null);
     } finally {
       setOrdersLoading(false);
     }
@@ -552,35 +592,47 @@ const ClientDetail = () => {
     }
   };
 
-  const getNextMondayIst = () => {
-    const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
-    const nowIst = new Date(Date.now() + IST_OFFSET_MS);
-    const day = nowIst.getUTCDay();
-    const daysUntilMonday = day === 1 ? 7 : (1 - day + 7) % 7;
-    const nextMonday = new Date(nowIst);
-    nextMonday.setUTCDate(nextMonday.getUTCDate() + daysUntilMonday);
-    nextMonday.setUTCHours(0, 0, 0, 0);
-    return new Date(nextMonday.getTime() - IST_OFFSET_MS);
-  };
+  const settlementWindowOpen = isSettlementWeekendOpen();
 
-  const nextMondayLabel = getNextMondayIst().toLocaleDateString('en-IN', {
+  const nextSundayLabel = getNextSundayIst().toLocaleDateString('en-IN', {
     weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Asia/Kolkata',
   });
 
   const handleSettleClient = () => {
+    if (!settlementWindowOpen) {
+      setSettlementResult({
+        tone: 'error',
+        message: 'Manual settlement is available only on Saturday and Sunday (IST).',
+      });
+      return;
+    }
     setSettlementResult(null);
     setSettlementWarning(true);
   };
 
   const doRunClientSettlement = async () => {
+    if (!settlementWindowOpen) {
+      setSettlementResult({
+        tone: 'error',
+        message: 'Manual settlement is available only on Saturday and Sunday (IST).',
+      });
+      return;
+    }
     setSettlementRunning(true);
     setSettlementResult(null);
     try {
       const res = await brokerApi.runCustomerSettlement(clientId, {});
-      setSettlementResult({ ok: true, message: res?.message || 'Settlement completed.' });
+      const created = Number(res?.settlement?.created || 0);
+      setSettlementResult({
+        tone: created > 0 ? 'success' : 'info',
+        message: res?.message || 'Settlement completed.',
+      });
+      if (created > 0) {
+        await Promise.all([fetchClientDetails(), fetchOrders()]);
+      }
     } catch (err) {
       const msg = err?.response?.data?.message || err?.message || 'Settlement failed.';
-      setSettlementResult({ ok: false, message: msg });
+      setSettlementResult({ tone: 'error', message: msg });
     } finally {
       setSettlementRunning(false);
     }
@@ -600,11 +652,27 @@ const ClientDetail = () => {
       return sum + pnl.netPnl;
     }, 0);
 
-    const todayClosedPnl = closedOrders.reduce((sum, o) => {
+    const currentIstDateKey = getIstDateKey(new Date());
+    const fallbackSessionBoundary = parseDate(clientBalanceSummary?.weekBoundaryStart);
+    let fallbackSessionRealizedPnl = 0;
+    let todayClosedPnl = 0;
+
+    closedOrders.forEach((o) => {
       const ltp = getDisplayLtp(o, true);
       const pnl = resolveOrderPnl({ order: o, isClosed: true, ltp });
-      return sum + pnl.netPnl;
-    }, 0);
+      const closedAt = parseDate(o.closed_at || o.exit_at || o.updatedAt || o.placedAt);
+      if (getIstDateKey(closedAt) === currentIstDateKey) {
+        todayClosedPnl += pnl.netPnl;
+      }
+      if (!fallbackSessionBoundary || (closedAt && closedAt >= fallbackSessionBoundary)) {
+        fallbackSessionRealizedPnl += pnl.netPnl;
+      }
+    });
+
+    const sessionRealizedPnl = toNumber(
+      clientBalanceSummary?.realizedPnlThisWeek,
+      fallbackSessionRealizedPnl
+    );
 
     const holdCount = openOrders.filter(o => o.status === 'HOLD').length;
 
@@ -615,10 +683,10 @@ const ClientDetail = () => {
       holdCount,
       totalOpenPnl,
       totalHoldingPnl,
+      sessionRealizedPnl,
       todayClosedPnl,
-      totalDayPnl: totalOpenPnl + todayClosedPnl,
     };
-  }, [openOrders, holdingOrders, closedOrders, getDisplayLtp]);
+  }, [openOrders, holdingOrders, closedOrders, getDisplayLtp, clientBalanceSummary]);
 
   if (loading) {
     return (
@@ -1113,15 +1181,15 @@ const ClientDetail = () => {
                   </p>
                 </div>
                 <div className="bg-white p-3 sm:p-4 rounded-lg shadow-sm border border-gray-100">
-                  <p className="text-[10px] sm:text-xs text-[#617589] font-medium mb-1">Closed Today P&L</p>
-                  <p className={`text-base sm:text-lg font-bold tracking-tight ${overviewMetrics.todayClosedPnl >= 0 ? 'text-[#078838]' : 'text-red-500'}`}>
-                    {formatSignedMoney(overviewMetrics.todayClosedPnl)}
+                  <p className="text-[10px] sm:text-xs text-[#617589] font-medium mb-1">This Session Realized P&L</p>
+                  <p className={`text-base sm:text-lg font-bold tracking-tight ${overviewMetrics.sessionRealizedPnl >= 0 ? 'text-[#078838]' : 'text-red-500'}`}>
+                    {formatSignedMoney(overviewMetrics.sessionRealizedPnl)}
                   </p>
                 </div>
                 <div className="bg-white p-3 sm:p-4 rounded-lg shadow-sm border border-gray-100">
-                  <p className="text-[10px] sm:text-xs text-[#617589] font-medium mb-1">Day's Total P&L</p>
-                  <p className={`text-base sm:text-lg font-bold tracking-tight ${overviewMetrics.totalDayPnl >= 0 ? 'text-[#078838]' : 'text-red-500'}`}>
-                    {formatSignedMoney(overviewMetrics.totalDayPnl)}
+                  <p className="text-[10px] sm:text-xs text-[#617589] font-medium mb-1">Closed Today P&L</p>
+                  <p className={`text-base sm:text-lg font-bold tracking-tight ${overviewMetrics.todayClosedPnl >= 0 ? 'text-[#078838]' : 'text-red-500'}`}>
+                    {formatSignedMoney(overviewMetrics.todayClosedPnl)}
                   </p>
                 </div>
               </div>
@@ -1136,21 +1204,34 @@ const ClientDetail = () => {
                 </div>
                 <div className="px-3 sm:px-4 py-3 space-y-2">
                   <p className="text-[11px] text-[#617589] leading-relaxed">
-                    Crystallises this client's realized P&L for the week. Their net cash and portfolio P&L counter will reset to ₹0. Contact the client before proceeding.
+                    Crystallises this client&apos;s weekly realized P&amp;L. Net cash and this week&apos;s portfolio P&amp;L counters reset for the next session, while open holdings and open-order unrealized P&amp;L stay live.
                   </p>
                   {settlementResult && (
                     <div className={`flex items-start gap-2 rounded-lg px-3 py-2 text-xs font-medium ${
-                      settlementResult.ok ? 'bg-green-50 text-green-700 border border-green-100' : 'bg-red-50 text-red-700 border border-red-100'
+                      settlementResult.tone === 'success'
+                        ? 'bg-green-50 text-green-700 border border-green-100'
+                        : settlementResult.tone === 'info'
+                          ? 'bg-blue-50 text-blue-700 border border-blue-100'
+                          : 'bg-red-50 text-red-700 border border-red-100'
                     }`}>
                       <span className="material-symbols-outlined text-[14px] mt-0.5 shrink-0">
-                        {settlementResult.ok ? 'check_circle' : 'error'}
+                        {settlementResult.tone === 'success'
+                          ? 'check_circle'
+                          : settlementResult.tone === 'info'
+                            ? 'info'
+                            : 'error'}
                       </span>
                       {settlementResult.message}
                     </div>
                   )}
+                  {!settlementWindowOpen && (
+                    <p className="text-[11px] text-amber-700">
+                      Manual settlement is available only on Saturday and Sunday (IST).
+                    </p>
+                  )}
                   <button
                     onClick={handleSettleClient}
-                    disabled={settlementRunning}
+                    disabled={settlementRunning || !settlementWindowOpen}
                     className="w-full h-10 bg-amber-500 hover:bg-amber-600 disabled:opacity-60 text-white text-sm font-bold rounded-xl flex items-center justify-center gap-2 transition-colors"
                   >
                     <span className="material-symbols-outlined text-[16px]">
@@ -1470,8 +1551,8 @@ const ClientDetail = () => {
                 <ul className="space-y-1.5">
                   {[
                     'Net Cash P&L balance → resets to ₹0',
-                    'Portfolio realized P&L counter → restarts from now',
-                    'Weekly P&L boundary → new week starts from this timestamp',
+                    'This week portfolio realized P&L counter → restarts from now',
+                    'Weekly session boundary → new session starts from this timestamp',
                   ].map((item) => (
                     <li key={item} className="flex items-start gap-2 text-xs text-red-700">
                       <span className="material-symbols-outlined text-red-500 text-[13px] mt-0.5 shrink-0">cancel</span>
@@ -1483,15 +1564,15 @@ const ClientDetail = () => {
 
               <div className="rounded-xl bg-blue-50 border border-blue-100 px-4 py-3">
                 <p className="text-[#137fec] text-xs font-bold uppercase tracking-wider mb-1.5">Next Auto-Run for All Clients</p>
-                <p className="text-[#111418] text-sm font-bold">{nextMondayLabel}</p>
-                <p className="text-[#617589] text-xs mt-0.5">at 12:00 AM IST (Monday)</p>
+                <p className="text-[#111418] text-sm font-bold">{nextSundayLabel}</p>
+                <p className="text-[#617589] text-xs mt-0.5">at 12:00 AM IST (Sunday)</p>
               </div>
 
               <div className="rounded-xl bg-amber-50 border border-amber-100 px-4 py-3 space-y-1.5">
                 {[
                   `Confirm you have contacted ${client?.name} before settling.`,
                   'Ensure outstanding losses are recovered or profits transferred.',
-                  'Any open positions will continue to accumulate P&L after this reset.',
+                  'Open holdings and open-order unrealized P&L stay live after this reset.',
                 ].map((item) => (
                   <div key={item} className="flex items-start gap-2 text-xs text-amber-800">
                     <span className="material-symbols-outlined text-amber-500 text-[13px] mt-0.5 shrink-0">info</span>

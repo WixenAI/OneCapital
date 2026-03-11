@@ -1,6 +1,8 @@
 import asyncHandler from 'express-async-handler';
 import FundModel from '../../Model/FundManagement/FundModel.js';
 import {
+  getSettlementWindowRangeFromDate,
+  isWithinWeekendSettlementWindow,
   parseSettlementMetadataFromNotes,
 } from '../../Utils/weeklySettlement.js';
 import { runWeeklySettlementForBroker } from '../../services/weeklySettlementService.js';
@@ -15,6 +17,23 @@ const getBrokerContext = (req) => ({
   brokerId: req.user?._id,
   brokerIdStr: req.user?.login_id || req.user?.stringBrokerId || req.user?.broker_id || '',
 });
+
+const weekendWindowPayload = (date = new Date()) => {
+  const { windowStartUtc, windowEndUtc } = getSettlementWindowRangeFromDate(date);
+  return {
+    windowStart: windowStartUtc.toISOString(),
+    windowEnd: windowEndUtc.toISOString(),
+    timezone: 'Asia/Kolkata',
+  };
+};
+
+const rejectClosedSettlementWindow = (res, date = new Date()) =>
+  res.status(403).json({
+    success: false,
+    code: 'SETTLEMENT_WINDOW_CLOSED',
+    message: 'Manual settlement is available only on Saturday and Sunday (IST).',
+    settlementWindow: weekendWindowPayload(date),
+  });
 
 /**
  * @desc     Run weekly settlement manually for broker clients
@@ -31,11 +50,26 @@ const runWeeklySettlement = asyncHandler(async (req, res) => {
   }
 
   const { effectiveAt, note = '', force = false } = req.body || {};
+  const requestNow = new Date();
+  if (!isWithinWeekendSettlementWindow(requestNow)) {
+    return rejectClosedSettlementWindow(res, requestNow);
+  }
+
+  const effectiveDate = effectiveAt || requestNow;
+  if (!isWithinWeekendSettlementWindow(effectiveDate)) {
+    return res.status(400).json({
+      success: false,
+      code: 'SETTLEMENT_WINDOW_CLOSED',
+      message: 'Settlement effectiveAt must fall on Saturday or Sunday (IST).',
+      settlementWindow: weekendWindowPayload(requestNow),
+    });
+  }
+
   const summary = await runWeeklySettlementForBroker({
     brokerId,
     brokerIdStr,
     mode: 'manual',
-    effectiveAt: effectiveAt || new Date(),
+    effectiveAt: effectiveDate,
     note,
     force: Boolean(force),
     req,
@@ -43,9 +77,10 @@ const runWeeklySettlement = asyncHandler(async (req, res) => {
 
   res.status(200).json({
     success: true,
+    code: summary.created > 0 ? 'SETTLEMENT_COMPLETED' : 'SETTLEMENT_ALREADY_COMPLETED_FOR_CYCLE',
     message: summary.created > 0
       ? 'Weekly settlement completed.'
-      : 'No new settlements created for this week.',
+      : 'All eligible clients are already settled for the current weekend cycle.',
     settlement: summary,
   });
 });
@@ -122,6 +157,8 @@ const getWeeklySettlementHistory = asyncHandler(async (req, res) => {
       mode: metadata.mode || 'manual',
       weekStart: metadata.weekStart || null,
       weekEnd: metadata.weekEnd || null,
+      cycleStart: metadata.cycleStart || null,
+      cycleEnd: metadata.cycleEnd || null,
       note: metadata.note || '',
       customersAffected: Number(row.customersAffected || 0),
       totalAmount: Number(row.totalAmount || 0),
@@ -163,6 +200,11 @@ const runCustomerSettlement = asyncHandler(async (req, res) => {
     });
   }
 
+  const requestNow = new Date();
+  if (!isWithinWeekendSettlementWindow(requestNow)) {
+    return rejectClosedSettlementWindow(res, requestNow);
+  }
+
   const fund = await FundModel.findOne({
     broker_id_str: brokerIdStr,
     customer_id_str: customerIdStr,
@@ -176,12 +218,22 @@ const runCustomerSettlement = asyncHandler(async (req, res) => {
   }
 
   const { effectiveAt, note = '', force = false } = req.body || {};
+  const effectiveDate = effectiveAt || requestNow;
+  if (!isWithinWeekendSettlementWindow(effectiveDate)) {
+    return res.status(400).json({
+      success: false,
+      code: 'SETTLEMENT_WINDOW_CLOSED',
+      message: 'Settlement effectiveAt must fall on Saturday or Sunday (IST).',
+      settlementWindow: weekendWindowPayload(requestNow),
+    });
+  }
+
   const summary = await runWeeklySettlementForBroker({
     brokerId,
     brokerIdStr,
     customerIdStr,
     mode: 'manual',
-    effectiveAt: effectiveAt || new Date(),
+    effectiveAt: effectiveDate,
     note: note || `Manual per-customer settlement for ${customerIdStr}`,
     force: Boolean(force),
     req,
@@ -189,9 +241,10 @@ const runCustomerSettlement = asyncHandler(async (req, res) => {
 
   res.status(200).json({
     success: true,
+    code: summary.created > 0 ? 'SETTLEMENT_COMPLETED' : 'SETTLEMENT_ALREADY_COMPLETED_FOR_CYCLE',
     message: summary.created > 0
       ? `Settlement completed for ${customerIdStr}.`
-      : `No new settlement created for ${customerIdStr} — already settled this week.`,
+      : `This client is already settled for the current weekend cycle.`,
     settlement: summary,
   });
 });

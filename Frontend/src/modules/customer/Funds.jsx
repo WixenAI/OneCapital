@@ -61,7 +61,7 @@ const Funds = () => {
     realizedPnlToday: 0,
     realizedPnlThisWeek: 0,
     weekBoundaryStart: null,
-    weekBoundaryType: 'auto_monday',
+    weekBoundaryType: 'trading_week_start',
   });
 
   const applyFundsState = useCallback((nextState) => {
@@ -83,7 +83,7 @@ const Funds = () => {
       realizedPnlToday: 0,
       realizedPnlThisWeek: 0,
       weekBoundaryStart: null,
-      weekBoundaryType: 'auto_monday',
+      weekBoundaryType: 'trading_week_start',
     });
     setTransactions(nextState?.transactions || []);
   }, []);
@@ -160,7 +160,7 @@ const Funds = () => {
           ?? null,
         weekBoundaryType: data.summary?.weekBoundaryType
           ?? data.settlement?.boundaryType
-          ?? 'auto_monday',
+          ?? 'trading_week_start',
       };
 
       const txHistory = historyRes.transactions || historyRes.data || [];

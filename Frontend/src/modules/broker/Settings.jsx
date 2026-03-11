@@ -3,6 +3,26 @@ import { useNavigate } from 'react-router-dom';
 import brokerApi from '../../api/broker';
 import { useBrokerAuth } from '../../context/BrokerContext';
 
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+
+const getIstClockDate = (date = new Date()) => new Date(date.getTime() + IST_OFFSET_MS);
+
+const isSettlementWeekendOpen = (date = new Date()) => {
+  const istClock = getIstClockDate(date);
+  const day = istClock.getUTCDay();
+  return day === 6 || day === 0;
+};
+
+const getNextSundayIst = (date = new Date()) => {
+  const istClock = getIstClockDate(date);
+  const day = istClock.getUTCDay(); // 0=Sun ... 6=Sat
+  const daysUntilSunday = day === 0 ? 7 : 7 - day;
+  const nextSunday = new Date(istClock);
+  nextSunday.setUTCDate(nextSunday.getUTCDate() + daysUntilSunday);
+  nextSunday.setUTCHours(0, 0, 0, 0);
+  return new Date(nextSunday.getTime() - IST_OFFSET_MS);
+};
+
 const Settings = () => {
   const navigate = useNavigate();
   const { logout } = useBrokerAuth();
@@ -37,18 +57,9 @@ const Settings = () => {
     qrPhotoUrl: ''
   });
 
-  const getNextMondayIst = () => {
-    const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
-    const nowIst = new Date(Date.now() + IST_OFFSET_MS);
-    const day = nowIst.getUTCDay(); // 0=Sun, 1=Mon...6=Sat
-    const daysUntilMonday = day === 1 ? 7 : (1 - day + 7) % 7;
-    const nextMonday = new Date(nowIst);
-    nextMonday.setUTCDate(nextMonday.getUTCDate() + daysUntilMonday);
-    nextMonday.setUTCHours(0, 0, 0, 0);
-    return new Date(nextMonday.getTime() - IST_OFFSET_MS);
-  };
+  const settlementWindowOpen = isSettlementWeekendOpen();
 
-  const formatMondayDate = (utcDate) =>
+  const formatSettlementDate = (utcDate) =>
     utcDate.toLocaleDateString('en-IN', {
       weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Asia/Kolkata',
     });
@@ -163,7 +174,7 @@ const Settings = () => {
       setSettlementConfig({ autoWeeklySettlementEnabled: nextValue });
       setSettlementNotice(
         nextValue
-          ? 'Auto weekly settlement enabled (Monday 00:00 IST).'
+          ? 'Auto weekly settlement enabled (Sunday 00:00 IST).'
           : 'Auto weekly settlement disabled. Manual settlement required.'
       );
     } catch (err) {
@@ -181,16 +192,20 @@ const Settings = () => {
       doToggleAutoSettlement();
       return;
     }
-    const nextMonday = getNextMondayIst();
+    const nextSunday = getNextSundayIst();
     setSettlementWarning({
       title: 'Enable Auto Settlement for All Clients?',
       mode: 'auto_enable',
-      nextMondayLabel: formatMondayDate(nextMonday),
+      nextRunLabel: formatSettlementDate(nextSunday),
       onConfirm: doToggleAutoSettlement,
     });
   };
 
   const doRunWeeklySettlement = async () => {
+    if (!settlementWindowOpen) {
+      setSettlementNotice('Manual settlement is available only on Saturday and Sunday (IST).');
+      return;
+    }
     setSettlementRunning(true);
     setSettlementNotice('');
     try {
@@ -206,11 +221,15 @@ const Settings = () => {
   };
 
   const handleRunWeeklySettlement = () => {
-    const nextMonday = getNextMondayIst();
+    if (!settlementWindowOpen) {
+      setSettlementNotice('Manual settlement is available only on Saturday and Sunday (IST).');
+      return;
+    }
+    const nextSunday = getNextSundayIst();
     setSettlementWarning({
       title: 'Run Settlement for All Clients?',
       mode: 'run_all',
-      nextMondayLabel: formatMondayDate(nextMonday),
+      nextRunLabel: formatSettlementDate(nextSunday),
       onConfirm: doRunWeeklySettlement,
     });
   };
@@ -477,7 +496,7 @@ const Settings = () => {
           <div className="bg-white rounded-xl shadow-sm overflow-hidden divide-y divide-gray-100">
             <div className="px-3 py-3 flex items-center justify-between gap-3">
               <div>
-                <p className="text-sm font-medium">Auto Settlement (Monday 00:00 IST)</p>
+                <p className="text-sm font-medium">Auto Settlement (Sunday 00:00 IST)</p>
                 <p className="text-[#617589] text-xs">
                   {settlementConfig.autoWeeklySettlementEnabled ? 'Enabled' : 'Disabled'}
                 </p>
@@ -503,17 +522,24 @@ const Settings = () => {
               <div>
                 <p className="text-sm font-medium">Manual Weekly Settlement</p>
                 <p className="text-[#617589] text-xs">
-                  Use this when you want to settle before Monday auto run or override the boundary.
+                  Use this during Saturday/Sunday when you need to settle clear clients before or after the Sunday auto run.
                 </p>
               </div>
               <button
                 onClick={handleRunWeeklySettlement}
-                disabled={settlementRunning || settlementSaving}
+                disabled={settlementRunning || settlementSaving || !settlementWindowOpen}
                 className="h-9 px-3 bg-[#137fec] text-white text-xs font-bold rounded-lg disabled:opacity-60"
               >
                 {settlementRunning ? 'Running...' : 'Run Now'}
               </button>
             </div>
+            {!settlementWindowOpen && (
+              <div className="px-3 pb-3 -mt-1">
+                <p className="text-[11px] text-amber-700">
+                  Manual settlement is available only on Saturday and Sunday (IST).
+                </p>
+              </div>
+            )}
 
             <div className="px-3 py-3">
               <p className="text-xs font-semibold text-[#617589] uppercase tracking-wider mb-2">Recent Runs</p>
@@ -586,8 +612,8 @@ const Settings = () => {
               <ul className="space-y-1.5">
                 {[
                   'Net Cash P&L balance → resets to ₹0 for affected clients',
-                  'Portfolio realized P&L counter → restarts from this point',
-                  'Weekly P&L boundary → new week begins from settlement timestamp',
+                  'This week portfolio realized P&L counter → restarts from this point',
+                  'Weekly session boundary → new session begins from settlement timestamp',
                 ].map((item) => (
                   <li key={item} className="flex items-start gap-2 text-xs text-red-700">
                     <span className="material-symbols-outlined text-red-500 text-[13px] mt-0.5 shrink-0">cancel</span>
@@ -599,15 +625,15 @@ const Settings = () => {
 
             <div className="rounded-xl bg-blue-50 border border-blue-100 px-4 py-3">
               <p className="text-[#137fec] text-xs font-bold uppercase tracking-wider mb-1.5">Next Auto-Run</p>
-              <p className="text-[#111418] text-sm font-bold">{settlementWarning.nextMondayLabel}</p>
-              <p className="text-[#617589] text-xs mt-0.5">at 12:00 AM IST (Monday)</p>
+              <p className="text-[#111418] text-sm font-bold">{settlementWarning.nextRunLabel}</p>
+              <p className="text-[#617589] text-xs mt-0.5">at 12:00 AM IST (Sunday)</p>
             </div>
 
             <div className="rounded-xl bg-amber-50 border border-amber-100 px-4 py-3 space-y-1.5">
               {[
                 'Contact each client before running settlement.',
                 'Ensure losses are recovered or profits are transferred.',
-                'Clients with open positions will still accumulate P&L after reset.',
+                'Open holdings and open-order unrealized P&L stay live after reset.',
               ].map((item) => (
                 <div key={item} className="flex items-start gap-2 text-xs text-amber-800">
                   <span className="material-symbols-outlined text-amber-500 text-[13px] mt-0.5 shrink-0">info</span>

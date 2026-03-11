@@ -4,8 +4,10 @@ import { writeAuditFailure, writeAuditSuccess } from '../Utils/AuditLogger.js';
 import {
   buildSettlementMetadataNotes,
   createSettlementReference,
-  getIstWeekRangeFromDate,
-  hasSettlementInWeekRange,
+  getSettlementWindowRangeFromDate,
+  getTradingWeekRangeFromDate,
+  hasSettlementInSettlementWindow,
+  isWithinWeekendSettlementWindow,
   round2,
   toValidDate,
 } from '../Utils/weeklySettlement.js';
@@ -26,6 +28,12 @@ const shouldRunAutoSettlement = (broker) => {
   return Boolean(configured);
 };
 
+const ensureEffectiveAtWithinWeekendWindow = (effectiveAt) => {
+  if (!isWithinWeekendSettlementWindow(effectiveAt)) {
+    throw new Error('Weekend settlement can run only between Saturday 00:00 IST and Monday 00:00 IST.');
+  }
+};
+
 const runWeeklySettlementForBroker = async ({
   brokerId,
   brokerIdStr,
@@ -44,7 +52,10 @@ const runWeeklySettlementForBroker = async ({
     throw new Error('brokerIdStr is required for weekly settlement.');
   }
 
-  const { weekStartUtc, weekEndUtc } = getIstWeekRangeFromDate(safeEffectiveAt);
+  ensureEffectiveAtWithinWeekendWindow(safeEffectiveAt);
+
+  const { weekStartUtc, weekEndUtc } = getTradingWeekRangeFromDate(safeEffectiveAt);
+  const { windowStartUtc, windowEndUtc } = getSettlementWindowRangeFromDate(safeEffectiveAt);
   const runRef = createSettlementReference(safeEffectiveAt);
 
   const fundQuery = { broker_id_str: brokerIdStr };
@@ -62,13 +73,13 @@ const runWeeklySettlementForBroker = async ({
     try {
       if (!Array.isArray(fund.transactions)) fund.transactions = [];
 
-      const existingInWeek = hasSettlementInWeekRange({
+      const existingInWindow = hasSettlementInSettlementWindow({
         transactions: fund.transactions,
-        weekStartUtc,
-        weekEndUtc,
+        windowStartUtc,
+        windowEndUtc,
       });
 
-      if (existingInWeek && !force) {
+      if (existingInWindow && !force) {
         skippedExisting += 1;
         continue;
       }
@@ -80,6 +91,8 @@ const runWeeklySettlementForBroker = async ({
           mode,
           weekStartUtc,
           weekEndUtc,
+          cycleStartUtc: windowStartUtc,
+          cycleEndUtc: windowEndUtc,
           settledAtUtc: safeEffectiveAt,
           brokerIdStr,
           brokerId: brokerId || '',
@@ -93,8 +106,7 @@ const runWeeklySettlementForBroker = async ({
         timestamp: safeEffectiveAt,
       });
       fund.last_calculated_at = safeEffectiveAt;
-      // Reset pnl_balance to 0 so net cash and available cash reflect
-      // only post-settlement P&L going forward.
+      // Reset pnl_balance so the next session starts from a clean realized P&L ledger.
       fund.pnl_balance = 0;
 
       await fund.save();
@@ -114,6 +126,8 @@ const runWeeklySettlementForBroker = async ({
     mode,
     weekStart: weekStartUtc.toISOString(),
     weekEnd: weekEndUtc.toISOString(),
+    cycleStart: windowStartUtc.toISOString(),
+    cycleEnd: windowEndUtc.toISOString(),
     settledAt: safeEffectiveAt.toISOString(),
     totalFunds: funds.length,
     created,
@@ -130,7 +144,7 @@ const runWeeklySettlementForBroker = async ({
     type: 'transaction',
     eventType: 'WEEKLY_SETTLEMENT_RUN',
     category: 'funds',
-    message: `Weekly settlement run ${runRef} for broker ${brokerIdStr} completed in ${mode} mode. ${created} fund records were settled, ${skippedExisting} were already settled, and ${failed} failed.`,
+    message: `Weekly settlement run ${runRef} for broker ${brokerIdStr} completed in ${mode} mode. ${created} fund records were settled, ${skippedExisting} were already settled in the current weekend cycle, and ${failed} failed.`,
     entity: {
       type: 'settlement_run',
       ref: runRef,
@@ -140,7 +154,7 @@ const runWeeklySettlementForBroker = async ({
       broker_id_str: brokerIdStr,
     },
     metadata: summary,
-    note: `Settlement window ${formatUtcStamp(weekStartUtc)} to ${formatUtcStamp(weekEndUtc)}. Settled at ${formatUtcStamp(safeEffectiveAt)}.${note ? ` ${note}` : ''}`,
+    note: `Trading week ${formatUtcStamp(weekStartUtc)} to ${formatUtcStamp(weekEndUtc)}. Settlement cycle ${formatUtcStamp(windowStartUtc)} to ${formatUtcStamp(windowEndUtc)}. Settled at ${formatUtcStamp(safeEffectiveAt)}.${note ? ` ${note}` : ''}`,
     source: req ? 'api' : 'system',
   });
 
@@ -202,7 +216,7 @@ const runAutoWeeklySettlementForAllBrokers = async ({ effectiveAt = new Date() }
         brokerIdStr: broker.broker_id,
         mode: 'auto',
         effectiveAt,
-        note: 'Auto weekly settlement (Monday 00:00 IST)',
+        note: 'Auto weekly settlement (Sunday 00:00 IST)',
         force: false,
         req: null,
       });

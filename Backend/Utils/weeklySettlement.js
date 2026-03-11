@@ -30,10 +30,36 @@ const getMondayStartIstUtc = (nowUtc = new Date()) => {
   return new Date(mondayIstClock.getTime() - IST_OFFSET_MS);
 };
 
-const getIstWeekRangeFromDate = (nowUtc = new Date()) => {
+const getTradingWeekRangeFromDate = (nowUtc = new Date()) => {
   const weekStartUtc = getMondayStartIstUtc(nowUtc);
   const weekEndUtc = new Date(weekStartUtc.getTime() + WEEK_MS);
   return { weekStartUtc, weekEndUtc };
+};
+
+const getSettlementWindowRangeFromDate = (nowUtc = new Date()) => {
+  const safeNow = toValidDate(nowUtc) || new Date();
+  const istClock = getIstClockDate(safeNow);
+  const istWeekday = istClock.getUTCDay(); // 0=Sun ... 6=Sat in IST clock-space
+  const daysSinceSaturday = (istWeekday + 1) % 7;
+
+  const saturdayIstClock = new Date(istClock);
+  saturdayIstClock.setUTCHours(0, 0, 0, 0);
+  saturdayIstClock.setUTCDate(saturdayIstClock.getUTCDate() - daysSinceSaturday);
+
+  const mondayIstClock = new Date(saturdayIstClock);
+  mondayIstClock.setUTCDate(mondayIstClock.getUTCDate() + 2);
+
+  return {
+    windowStartUtc: new Date(saturdayIstClock.getTime() - IST_OFFSET_MS),
+    windowEndUtc: new Date(mondayIstClock.getTime() - IST_OFFSET_MS),
+  };
+};
+
+const isWithinWeekendSettlementWindow = (nowUtc = new Date()) => {
+  const safeNow = toValidDate(nowUtc);
+  if (!safeNow) return false;
+  const { windowStartUtc, windowEndUtc } = getSettlementWindowRangeFromDate(safeNow);
+  return safeNow >= windowStartUtc && safeNow < windowEndUtc;
 };
 
 const parseSettlementMetadataFromNotes = (notes) => {
@@ -62,6 +88,8 @@ const buildSettlementMetadataNotes = ({
   mode = 'manual',
   weekStartUtc,
   weekEndUtc,
+  cycleStartUtc,
+  cycleEndUtc,
   settledAtUtc,
   brokerIdStr = '',
   brokerId = '',
@@ -71,10 +99,12 @@ const buildSettlementMetadataNotes = ({
 } = {}) => {
   const payload = {
     event: 'weekly_settlement',
-    version: 1,
+    version: 2,
     mode,
     weekStart: weekStartUtc ? new Date(weekStartUtc).toISOString() : '',
     weekEnd: weekEndUtc ? new Date(weekEndUtc).toISOString() : '',
+    cycleStart: cycleStartUtc ? new Date(cycleStartUtc).toISOString() : '',
+    cycleEnd: cycleEndUtc ? new Date(cycleEndUtc).toISOString() : '',
     settledAt: settledAtUtc ? new Date(settledAtUtc).toISOString() : new Date().toISOString(),
     brokerIdStr: String(brokerIdStr || ''),
     brokerId: String(brokerId || ''),
@@ -108,42 +138,51 @@ const getLatestWeeklySettlement = (transactions = [], predicate = null) => {
   return latest;
 };
 
-const hasSettlementInWeekRange = ({ transactions = [], weekStartUtc, weekEndUtc }) => {
-  const start = toValidDate(weekStartUtc);
-  const end = toValidDate(weekEndUtc);
+const hasSettlementInRange = ({ transactions = [], rangeStartUtc, rangeEndUtc }) => {
+  const start = toValidDate(rangeStartUtc);
+  const end = toValidDate(rangeEndUtc);
   if (!start || !end) return null;
   return getLatestWeeklySettlement(transactions, ({ timestamp }) => timestamp >= start && timestamp < end);
 };
 
-const resolveCurrentWeeklyBoundary = ({ transactions = [], nowUtc = new Date() } = {}) => {
-  const safeNow = toValidDate(nowUtc) || new Date();
-  const { weekStartUtc, weekEndUtc } = getIstWeekRangeFromDate(safeNow);
-
-  const latestThisWeek = hasSettlementInWeekRange({
+const hasSettlementInWeekRange = ({ transactions = [], weekStartUtc, weekEndUtc }) =>
+  hasSettlementInRange({
     transactions,
-    weekStartUtc,
-    weekEndUtc,
+    rangeStartUtc: weekStartUtc,
+    rangeEndUtc: weekEndUtc,
   });
 
-  if (!latestThisWeek) {
+const hasSettlementInSettlementWindow = ({ transactions = [], windowStartUtc, windowEndUtc }) =>
+  hasSettlementInRange({
+    transactions,
+    rangeStartUtc: windowStartUtc,
+    rangeEndUtc: windowEndUtc,
+  });
+
+const resolveCurrentWeeklyBoundary = ({ transactions = [], nowUtc = new Date() } = {}) => {
+  const safeNow = toValidDate(nowUtc) || new Date();
+  const { weekStartUtc, weekEndUtc } = getTradingWeekRangeFromDate(safeNow);
+  const latestSettlement = getLatestWeeklySettlement(transactions, ({ timestamp }) => timestamp <= safeNow);
+
+  if (!latestSettlement) {
     return {
       boundaryStartUtc: weekStartUtc,
-      boundaryType: 'auto_monday',
+      boundaryType: 'trading_week_start',
       weekStartUtc,
       weekEndUtc,
       latestSettlement: null,
     };
   }
 
-  const mode = String(latestThisWeek.metadata?.mode || '').toLowerCase();
-  const boundaryType = mode === 'auto' ? 'auto_monday' : 'manual_settlement';
+  const mode = String(latestSettlement.metadata?.mode || '').toLowerCase();
+  const boundaryType = mode === 'auto' ? 'auto_settlement' : 'manual_settlement';
 
   return {
-    boundaryStartUtc: latestThisWeek.timestamp,
+    boundaryStartUtc: latestSettlement.timestamp,
     boundaryType,
     weekStartUtc,
     weekEndUtc,
-    latestSettlement: latestThisWeek,
+    latestSettlement,
   };
 };
 
@@ -160,11 +199,15 @@ export {
   round2,
   toValidDate,
   getMondayStartIstUtc,
-  getIstWeekRangeFromDate,
+  getTradingWeekRangeFromDate,
+  getSettlementWindowRangeFromDate,
+  isWithinWeekendSettlementWindow,
   parseSettlementMetadataFromNotes,
   buildSettlementMetadataNotes,
   getLatestWeeklySettlement,
+  hasSettlementInRange,
   hasSettlementInWeekRange,
+  hasSettlementInSettlementWindow,
   resolveCurrentWeeklyBoundary,
   createSettlementReference,
 };
